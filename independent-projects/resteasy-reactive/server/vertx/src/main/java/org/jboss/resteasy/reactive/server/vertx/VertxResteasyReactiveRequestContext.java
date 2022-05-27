@@ -39,6 +39,7 @@ import io.vertx.core.buffer.Buffer;
 import io.vertx.core.http.HttpServerRequest;
 import io.vertx.core.http.HttpServerResponse;
 import io.vertx.core.http.impl.Http1xServerResponse;
+import io.vertx.core.http.impl.headers.HeadersMultiMap;
 import io.vertx.core.net.impl.ConnectionBase;
 import io.vertx.ext.web.RoutingContext;
 
@@ -146,17 +147,38 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
 
     @Override
     public String getRequestHeader(CharSequence name) {
-        return request.headers().get(name);
+        var headers = this.request.headers();
+        if (headers instanceof HeadersMultiMap) {
+            // this is an HTTP 1.1 fast path optimization to enable cached ASCII keys constants
+            if (name == HttpHeaders.CONTENT_TYPE) {
+                return headers.get(HttpHeaderNames.CONTENT_TYPE);
+            }
+            if (name == HttpHeaders.ACCEPT) {
+                return headers.get(HttpHeaderNames.ACCEPT);
+            }
+        }
+        return headers.get(name);
     }
 
     @Override
     public Iterable<Map.Entry<String, String>> getAllRequestHeaders() {
+        System.out.println("OVERALL getAllRequestHeaders!!!!");
         return request.headers();
     }
 
     @Override
     public List<String> getAllRequestHeaders(String name) {
-        return request.headers().getAll(name);
+        final var headers = this.request.headers();
+        if (headers instanceof HeadersMultiMap) {
+            // this is an HTTP 1.1 fast path optimization to enable cached ASCII keys constants
+            if (name == HttpHeaders.CONTENT_TYPE) {
+                return headers.getAll(HttpHeaderNames.CONTENT_TYPE);
+            }
+            if (name == HttpHeaders.ACCEPT) {
+                return headers.getAll(HttpHeaderNames.ACCEPT);
+            }
+        }
+        return headers.getAll(name);
     }
 
     @Override
@@ -379,7 +401,13 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
 
     @Override
     public ServerHttpResponse setResponseHeader(CharSequence name, CharSequence value) {
-        response.headers().set(name, value);
+        var headers = this.response.headers();
+        if (headers instanceof HeadersMultiMap && name == HttpHeaders.CONTENT_TYPE) {
+            // this is an HTTP 1.1 fast path optimization to enable cached ASCII keys constants
+            headers.set(HttpHeaderNames.CONTENT_TYPE, value);
+        } else {
+            headers.set(name, value);
+        }
         return this;
     }
 
