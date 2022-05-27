@@ -16,6 +16,7 @@ import java.util.function.Consumer;
 
 import javax.ws.rs.core.HttpHeaders;
 
+import io.vertx.core.http.impl.Http1xServerRequest;
 import org.jboss.resteasy.reactive.common.util.CaseInsensitiveMap;
 import org.jboss.resteasy.reactive.server.core.Deployment;
 import org.jboss.resteasy.reactive.server.core.ResteasyReactiveRequestContext;
@@ -146,6 +147,17 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
 
     @Override
     public String getRequestHeader(CharSequence name) {
+        if (request instanceof Http1xServerRequest && name instanceof String) {
+            final String nameAsString = (String) name;
+            // this is an HTTP 1.1 fast path optimization to enable cached ASCII keys constants:
+            // see ClassRoutingHandler::handle's HttpHeaders used.
+            switch (nameAsString) {
+                case HttpHeaders.CONTENT_TYPE:
+                    return request.headers().get(HttpHeaderNames.CONTENT_TYPE);
+                case HttpHeaders.ACCEPT:
+                    return request.headers().get(HttpHeaderNames.ACCEPT);
+            }
+        }
         return request.headers().get(name);
     }
 
@@ -156,6 +168,16 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
 
     @Override
     public List<String> getAllRequestHeaders(String name) {
+        if (request instanceof Http1xServerRequest) {
+            // this is an HTTP 1.1 fast path optimization to enable cached ASCII keys constants:
+            // see ClassRoutingHandler::handle's HttpHeaders used.
+            switch (name) {
+                case HttpHeaders.CONTENT_TYPE:
+                    return request.headers().getAll(HttpHeaderNames.CONTENT_TYPE);
+                case HttpHeaders.ACCEPT:
+                    return request.headers().getAll(HttpHeaderNames.ACCEPT);
+            }
+        }
         return request.headers().getAll(name);
     }
 
