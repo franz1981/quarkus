@@ -147,15 +147,18 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
 
     @Override
     public String getRequestHeader(CharSequence name) {
+        final HttpServerRequest request = this.request;
         if (request instanceof Http1xServerRequest && name instanceof String) {
             final String nameAsString = (String) name;
             // this is an HTTP 1.1 fast path optimization to enable cached ASCII keys constants:
             // see ClassRoutingHandler::handle's HttpHeaders used.
-            switch (nameAsString) {
-                case HttpHeaders.CONTENT_TYPE:
-                    return request.headers().get(HttpHeaderNames.CONTENT_TYPE);
-                case HttpHeaders.ACCEPT:
-                    return request.headers().get(HttpHeaderNames.ACCEPT);
+            // We're not using switch on purpose: we don't want to force String::hashCode
+            // for not constant/cached String(s)
+            if (nameAsString == HttpHeaders.CONTENT_TYPE) {
+                return request.headers().get(HttpHeaderNames.CONTENT_TYPE);
+            }
+            if (nameAsString == HttpHeaders.ACCEPT) {
+                return request.headers().get(HttpHeaderNames.ACCEPT);
             }
         }
         return request.headers().get(name);
@@ -168,14 +171,17 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
 
     @Override
     public List<String> getAllRequestHeaders(String name) {
+        final HttpServerRequest request = this.request;
         if (request instanceof Http1xServerRequest) {
             // this is an HTTP 1.1 fast path optimization to enable cached ASCII keys constants:
             // see ClassRoutingHandler::handle's HttpHeaders used.
-            switch (name) {
-                case HttpHeaders.CONTENT_TYPE:
-                    return request.headers().getAll(HttpHeaderNames.CONTENT_TYPE);
-                case HttpHeaders.ACCEPT:
-                    return request.headers().getAll(HttpHeaderNames.ACCEPT);
+            // We're not using switch on purpose: we don't want to force String::hashCode
+            // for not constant/cached String(s)
+            if (name == HttpHeaders.CONTENT_TYPE) {
+                return request.headers().getAll(HttpHeaderNames.CONTENT_TYPE);
+            }
+            if (name == HttpHeaders.ACCEPT) {
+                return request.headers().getAll(HttpHeaderNames.ACCEPT);
             }
         }
         return request.headers().getAll(name);
