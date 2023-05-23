@@ -108,7 +108,7 @@ final class AppendBuffer {
             // super fast-path
             return firstBuf;
         }
-        System.our.println("FlushBatch " + size + " bytes with " + (1 + others.size()) + " components.");
+        System.out.println("FlushBatch " + size + " bytes with " + (1 + others.size()) + " components");
         var batch = allocator.compositeDirectBuffer(1 + others.size());
         try {
             // we unset this first in case addComponent would fail and will be released
