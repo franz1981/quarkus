@@ -9,6 +9,15 @@ package io.quarkus.arc;
 public interface ManagedContext extends InjectableContext {
 
     /**
+     * Activate the context and return the context's state
+     */
+    default ContextState activateInitial() {
+        activate(null);
+        return getState();
+    }
+
+
+    /**
      * Activate the context with no initial state.
      */
     default void activate() {

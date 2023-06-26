@@ -122,6 +122,24 @@ class RequestContext implements ManagedContext {
     }
 
     @Override
+    public ContextState activateInitial() {
+        if (LOG.isTraceEnabled()) {
+            String stack = Arrays.stream(Thread.currentThread().getStackTrace())
+                    .skip(2)
+                    .limit(7)
+                    .map(se -> "\n\t" + se.toString())
+                    .collect(Collectors.joining());
+            LOG.tracef("Activate %s %s\n\t...", "new", stack);
+        }
+        var state = new RequestContextState(new ConcurrentHashMap<>());
+        assert currentContext.get() == null;
+        currentContext.set(state);
+        // Fire an event with qualifier @Initialized(RequestScoped.class) if there are any observers for it
+        fireIfNotEmpty(initializedNotifier);
+        return state;
+    }
+
+    @Override
     public void activate(ContextState initialState) {
         if (LOG.isTraceEnabled()) {
             traceActivate(initialState);
