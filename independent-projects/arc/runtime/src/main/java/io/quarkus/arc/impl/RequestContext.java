@@ -7,7 +7,6 @@ import java.util.Arrays;
 import java.util.Map;
 import java.util.Objects;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.ConcurrentMap;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 
@@ -66,13 +65,14 @@ class RequestContext implements ManagedContext {
             // Context is not active!
             return null;
         }
-        ContextInstanceHandle<T> instance = (ContextInstanceHandle<T>) ctxState.map.get(contextual);
+        var map = ctxState.map();
+        ContextInstanceHandle<T> instance = (ContextInstanceHandle<T>) map.get(contextual);
         if (instance == null) {
             CreationalContext<T> creationalContext = creationalContextFun.apply(contextual);
             // Bean instance does not exist - create one if we have CreationalContext
             instance = new ContextInstanceHandleImpl<T>((InjectableBean<T>) contextual,
                     contextual.create(creationalContext), creationalContext);
-            ctxState.map.put(contextual, instance);
+            map.put(contextual, instance);
         }
         return instance.get();
     }
@@ -99,7 +99,7 @@ class RequestContext implements ManagedContext {
         if (state == null) {
             throw notActive();
         }
-        ContextInstanceHandle<T> instance = (ContextInstanceHandle<T>) state.map.get(contextual);
+        ContextInstanceHandle<T> instance = (ContextInstanceHandle<T>) state.map().get(contextual);
         return instance == null ? null : instance.get();
     }
 
@@ -115,7 +115,7 @@ class RequestContext implements ManagedContext {
             // Context is not active
             throw notActive();
         }
-        ContextInstanceHandle<?> instance = state.map.remove(contextual);
+        ContextInstanceHandle<?> instance = state.map().remove(contextual);
         if (instance != null) {
             instance.destroy();
         }
@@ -131,7 +131,7 @@ class RequestContext implements ManagedContext {
                     .collect(Collectors.joining());
             LOG.tracef("Activate %s %s\n\t...", "new", stack);
         }
-        var state = new RequestContextState(new ConcurrentHashMap<>());
+        var state = new RequestContextState();
         assert currentContext.get() == null;
         currentContext.set(state);
         // Fire an event with qualifier @Initialized(RequestScoped.class) if there are any observers for it
@@ -145,7 +145,7 @@ class RequestContext implements ManagedContext {
             traceActivate(initialState);
         }
         if (initialState == null) {
-            currentContext.set(new RequestContextState(new ConcurrentHashMap<>()));
+            currentContext.set(new RequestContextState());
             // Fire an event with qualifier @Initialized(RequestScoped.class) if there are any observers for it
             fireIfNotEmpty(initializedNotifier);
         } else {
@@ -214,14 +214,14 @@ class RequestContext implements ManagedContext {
         }
         if (state instanceof RequestContextState) {
             RequestContextState reqState = ((RequestContextState) state);
-            if (reqState.invalidate()) {
+            var map = reqState.invalidate();
+            if (map != null) {
                 // Fire an event with qualifier @BeforeDestroyed(RequestScoped.class) if there are any observers for it
                 fireIfNotEmpty(beforeDestroyedNotifier);
-                Map<Contextual<?>, ContextInstanceHandle<?>> map = ((RequestContextState) state).map;
                 if (!map.isEmpty()) {
                     //Performance: avoid an iterator on the map elements
                     map.forEach(this::destroyContextElement);
-                    map.clear();
+                    // no need for map::clear because it's already invalidated
                 }
                 // Fire an event with qualifier @Destroyed(RequestScoped.class) if there are any observers for it
                 fireIfNotEmpty(destroyedNotifier);
@@ -266,48 +266,52 @@ class RequestContext implements ManagedContext {
 
     static class RequestContextState implements ContextState {
 
-        // Using 0 as default value enable removing an initialization
-        // in the constructor, piggybacking on the default value.
-        // As per https://docs.oracle.com/javase/specs/jls/se8/html/jls-12.html#jls-12.5
-        // the default field values are set before 'this' is accessible, hence
-        // they should be the very first value observable even in presence of
-        // unsafe publication of this object.
-        private static final int VALID = 0;
-        private static final int INVALID = 1;
-        private static final VarHandle IS_VALID;
+        private static final VarHandle MAP_UPDATER;
 
         static {
             try {
-                IS_VALID = MethodHandles.lookup().findVarHandle(RequestContextState.class, "isValid", int.class);
+                MAP_UPDATER = MethodHandles.lookup().findVarHandle(RequestContext.class, "map", Map.class);
             } catch (ReflectiveOperationException e) {
                 throw new Error(e);
             }
         }
 
-        private final Map<Contextual<?>, ContextInstanceHandle<?>> map;
-        private volatile int isValid;
+        private Map<Contextual<?>, ContextInstanceHandle<?>> map;
 
-        RequestContextState(ConcurrentMap<Contextual<?>, ContextInstanceHandle<?>> value) {
-            this.map = Objects.requireNonNull(value);
+        RequestContextState() {
+            // lazily-initialize the context state with 2 elements capacity map
+            // because destroy iterates over the whole capacity, regardless
+            // the amount of elements in!
+            map = new ConcurrentHashMap<>(1, 0.75f, 1);
+            // this ensure safe-publication of map without getting the cost of VarHandle::fullFence
+            VarHandle.storeStoreFence();
         }
 
         @Override
         public Map<InjectableBean<?>, Object> getContextualInstances() {
+            var map = map();
+            if (map == null) {
+                return Map.of();
+            }
             return map.values().stream()
                     .collect(Collectors.toUnmodifiableMap(ContextInstanceHandle::getBean, ContextInstanceHandle::get));
         }
 
+        Map<Contextual<?>, ContextInstanceHandle<?>> map() {
+            return (Map<Contextual<?>, ContextInstanceHandle<?>>) MAP_UPDATER.getAcquire(this);
+        }
+
         /**
-         * @return {@code true} if the state was successfully invalidated, {@code false} otherwise
+         * @return {@code != null} if the state was successfully invalidated, {@code null} otherwise
          */
-        boolean invalidate() {
+        Map<Contextual<?>, ContextInstanceHandle<?>> invalidate() {
             // Atomically sets the value just like AtomicBoolean.compareAndSet(boolean, boolean)
-            return IS_VALID.compareAndSet(this, VALID, INVALID);
+            return (Map<Contextual<?>, ContextInstanceHandle<?>>) MAP_UPDATER.getAndSet(this, null);
         }
 
         @Override
         public boolean isValid() {
-            return isValid == VALID;
+            return map() != null;
         }
 
     }
