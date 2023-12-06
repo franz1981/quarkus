@@ -84,17 +84,23 @@ abstract class AbstractSharedContext implements InjectableContext, InjectableCon
 
     @Override
     public synchronized void destroy() {
-        List<ContextInstanceHandle<?>> values = new LinkedList<>();
+        var values = new ArrayList<ContextInstanceHandle<?>>();
         instances.forEach(values::add);
         if (values.isEmpty()) {
             return;
         }
         // Destroy the producers first
-        for (Iterator<ContextInstanceHandle<?>> iterator = values.iterator(); iterator.hasNext();) {
-            ContextInstanceHandle<?> instanceHandle = iterator.next();
+        int toProcess = values.size();
+        int index = 0;
+        for (int i = 0; i < toProcess; i++) {
+            ContextInstanceHandle<?> instanceHandle = values.get(index);
             if (instanceHandle.getBean().getDeclaringBean() != null) {
                 instanceHandle.destroy();
-                iterator.remove();
+                // removal could replace the current value with the last value in the list (if any)
+                // hence we cannot increment the index
+                unorderedRemove(values, index);
+            } else {
+                index++;
             }
         }
         for (ContextInstanceHandle<?> instanceHandle : values) {
@@ -102,6 +108,17 @@ abstract class AbstractSharedContext implements InjectableContext, InjectableCon
         }
         instances.clear();
     }
+
+    private static <T> void unorderedRemove(final ArrayList<T> list, final int index)
+    {
+        final int lastIndex = list.size() - 1;
+        if (index != lastIndex) {
+            list.set(index, list.remove(lastIndex));
+        } else {
+            list.remove(index);
+        }
+    }
+
 
     @Override
     public void destroy(ContextState state) {
