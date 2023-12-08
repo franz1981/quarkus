@@ -4,7 +4,6 @@ import java.util.List;
 import java.util.Locale;
 
 import jakarta.ws.rs.WebApplicationException;
-import jakarta.ws.rs.core.HttpHeaders;
 import jakarta.ws.rs.core.MediaType;
 import jakarta.ws.rs.core.Response;
 import jakarta.ws.rs.core.Variant;
@@ -35,7 +34,7 @@ public class FixedProducesHandler implements ServerRestHandler {
 
     @Override
     public void handle(ResteasyReactiveRequestContext requestContext) throws Exception {
-        List<String> acceptValues = (List<String>) requestContext.getHeader(HttpHeaders.ACCEPT, false);
+        List<String> acceptValues = requestContext.getAccept(false);
         if (acceptValues.isEmpty() || requestContext.isProducesChecked()) {
             requestContext.setResponseContentType(mediaType);
             requestContext.setEntityWriter(writer);
