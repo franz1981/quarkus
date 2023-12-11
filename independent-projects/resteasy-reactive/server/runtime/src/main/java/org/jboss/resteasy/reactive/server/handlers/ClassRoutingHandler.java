@@ -33,7 +33,12 @@ public class ClassRoutingHandler implements ServerRestHandler {
     final boolean resumeOn404;
 
     public ClassRoutingHandler(Map<String, RequestMapper<RuntimeResource>> mappers, int parameterOffset, boolean resumeOn404) {
-        this.mappers = mappers;
+        if (mappers.size() == 1) {
+            var entry = mappers.entrySet().iterator().next();
+            this.mappers = Map.of(entry.getKey(), entry.getValue());
+        } else {
+            this.mappers = mappers;
+        }
         this.parameterOffset = parameterOffset;
         this.resumeOn404 = resumeOn404;
     }

@@ -34,8 +34,8 @@ public class FixedProducesHandler implements ServerRestHandler {
 
     @Override
     public void handle(ResteasyReactiveRequestContext requestContext) throws Exception {
-        List<String> acceptValues = requestContext.getAccept(false);
-        if (acceptValues.isEmpty() || requestContext.isProducesChecked()) {
+        List<String> acceptValues;
+        if (requestContext.isProducesChecked() || (acceptValues = requestContext.getAccept(false)).isEmpty()) {
             requestContext.setResponseContentType(mediaType);
             requestContext.setEntityWriter(writer);
         } else {
