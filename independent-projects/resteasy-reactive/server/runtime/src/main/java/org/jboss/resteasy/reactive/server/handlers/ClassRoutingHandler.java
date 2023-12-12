@@ -170,12 +170,16 @@ public class ClassRoutingHandler implements ServerRestHandler {
                 MediaType providedMediaType = producesMediaTypes[0];
                 return providedMediaType.isCompatible(toMediaType(accepts.trim()));
             } else if (multipleAcceptsValues && (producesMediaTypes.length == 1)) {
-                // this is fairly common case, so we want it to be as fast as possible
-                // we do that by manually splitting the accepts header and immediately checking
-                // if the value is compatible with the produces media type
+                // blind fixed-cost attempt for accepts which end up with something like */*;q=0.9
+                int acceptLen = accepts.length();
+                // indexOf works at its best when the string is long enough
+                if (acceptLen >= 16) {
+                    if (accepts.indexOf("*/*", acceptLen - 16) != -1) {
+                        return true;
+                    }
+                }
                 boolean compatible = false;
                 int begin = 0;
-
                 do {
                     String acceptPart;
                     if (commaIndex == -1) { // this is the case where we are checking the remainder of the string
