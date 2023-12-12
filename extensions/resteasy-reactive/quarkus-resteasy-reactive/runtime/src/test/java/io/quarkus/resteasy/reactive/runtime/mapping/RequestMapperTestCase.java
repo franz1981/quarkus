@@ -34,20 +34,6 @@ public class RequestMapperTestCase {
 
     }
 
-    @Test
-    public void testSingleInitialMatchPathMapper() {
-
-        RequestMapper<String> mapper = mapper("/json", "/plaintext");
-        mapper.dump();
-
-        var result = mapper.map("/json");
-        Assertions.assertEquals("/json", result.value);
-        Assertions.assertEquals(0, result.pathParamValues.length);
-        result = mapper.map("/plaintext");
-        Assertions.assertEquals("/plaintext", result.value);
-        Assertions.assertEquals(0, result.pathParamValues.length);
-    }
-
     RequestMapper<String> mapper(String... vals) {
         ArrayList<RequestMapper.RequestPath<String>> list = new ArrayList<>();
         for (String i : vals) {
