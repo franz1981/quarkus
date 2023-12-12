@@ -43,6 +43,7 @@ class SubstringMap<V> {
         }
         Object[] table = this.table;
         int hash = hash(key, length);
+        assert hash == key.substring(0, length).hashCode();
         int pos = tablePos(table, hash);
         int start = pos;
         while (table[pos] != null) {
@@ -68,6 +69,10 @@ class SubstringMap<V> {
         if (length == 0) {
             return 0;
         }
+        if (length == value.length()) {
+            // this would enable StringLatin1::hashCode to avoid bound checks
+            return value.hashCode();
+        }
         int h = 0;
         for (int i = 0; i < length; i++) {
             h = 31 * h + value.charAt(i);
@@ -76,15 +81,16 @@ class SubstringMap<V> {
     }
 
     private boolean doEquals(String s1, String s2, int length) {
-        if (s1.length() != length || s2.length() < length) {
+        var s1Len = s1.length();
+        int s2Len;
+        if (s1Len != length || (s2Len = s2.length()) < length) {
             return false;
         }
-        for (int i = 0; i < length; ++i) {
-            if (s1.charAt(i) != s2.charAt(i)) {
-                return false;
-            }
+        if (s2Len == length) {
+            return s1.equals(s2);
         }
-        return true;
+        // s1len == length && s2Len > length
+        return s1.regionMatches(0, s2, 0, length);
     }
 
     Iterable<String> keys() {
