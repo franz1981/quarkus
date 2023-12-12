@@ -1,6 +1,7 @@
 package org.jboss.resteasy.reactive.server.core.startup;
 
 import static org.jboss.resteasy.reactive.common.util.DeploymentUtils.loadClass;
+import static org.jboss.resteasy.reactive.server.handlers.ClassRoutingHandler.RoutingMappers.isAllHttpMethods;
 
 import java.io.Closeable;
 import java.util.ArrayList;
@@ -139,7 +140,7 @@ public class RuntimeDeploymentManager {
 
                 RuntimeMappingDeployment.buildMethodMapper(templates, method, runtimeResource);
             }
-            Map<String, RequestMapper<RuntimeResource>> mappersByMethod = new RuntimeMappingDeployment(templates)
+            var mappersByMethod = new RuntimeMappingDeployment(templates)
                     .buildClassMapper();
             mappersByMethod.forEach((method, mapper) -> {
                 for (RequestMapper.RequestPath<RuntimeResource> path : mapper.getTemplates()) {
@@ -152,7 +153,8 @@ public class RuntimeDeploymentManager {
                         if (!disabledEndpoints.containsKey(fullPath)) {
                             disabledEndpoints.put(fullPath, new ArrayList<>());
                         }
-                        disabledEndpoints.get(fullPath).add(method);
+                        String disabledMethod = isAllHttpMethods(method) ? null : method;
+                        disabledEndpoints.get(fullPath).add(disabledMethod);
                     }
                 }
             });

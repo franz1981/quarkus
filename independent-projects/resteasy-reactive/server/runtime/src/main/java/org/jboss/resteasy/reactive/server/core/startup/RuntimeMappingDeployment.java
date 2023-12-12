@@ -2,13 +2,13 @@ package org.jboss.resteasy.reactive.server.core.startup;
 
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.SortedMap;
 import java.util.TreeMap;
 
 import org.jboss.resteasy.reactive.common.model.ResourceMethod;
+import org.jboss.resteasy.reactive.server.handlers.ClassRoutingHandler;
 import org.jboss.resteasy.reactive.server.handlers.MediaTypeMapper;
 import org.jboss.resteasy.reactive.server.mapping.RequestMapper;
 import org.jboss.resteasy.reactive.server.mapping.RuntimeResource;
@@ -25,7 +25,7 @@ class RuntimeMappingDeployment {
     private String currentHttpMethod;
     private ArrayList<RequestMapper.RequestPath<RuntimeResource>> currentMapperPerMethodTemplates;
 
-    private Map<String, RequestMapper<RuntimeResource>> classMapper;
+    private ClassRoutingHandler.RoutingMappers.Builder classMapper;
     private int maxMethodTemplateNameCount = -1;
 
     RuntimeMappingDeployment(
@@ -41,11 +41,11 @@ class RuntimeMappingDeployment {
         return maxMethodTemplateNameCount;
     }
 
-    Map<String, RequestMapper<RuntimeResource>> buildClassMapper() {
-        classMapper = new HashMap<>();
+    ClassRoutingHandler.RoutingMappers buildClassMapper() {
+        classMapper = ClassRoutingHandler.RoutingMappers.builder();
         maxMethodTemplateNameCount = 0;
         classTemplates.forEach(this::forEachClassTemplate);
-        return classMapper;
+        return classMapper.build();
     }
 
     private void forEachClassTemplate(String httpMethod,
@@ -66,8 +66,7 @@ class RuntimeMappingDeployment {
         //now we have all our possible resources
         currentMapperPerMethodTemplates = new ArrayList<>();
         perMethodTemplateMap.forEach(this::forEachMethodTemplateMap);
-
-        classMapper.put(httpMethod, new RequestMapper<>(currentMapperPerMethodTemplates));
+        classMapper.addMapper(httpMethod, new RequestMapper<>(currentMapperPerMethodTemplates));
     }
 
     private void forEachMethodTemplateMap(URITemplate path, List<RequestMapper.RequestPath<RuntimeResource>> requestPaths) {

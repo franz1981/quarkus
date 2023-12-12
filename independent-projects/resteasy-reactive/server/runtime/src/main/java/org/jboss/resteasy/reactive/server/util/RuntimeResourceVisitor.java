@@ -1,5 +1,7 @@
 package org.jboss.resteasy.reactive.server.util;
 
+import static org.jboss.resteasy.reactive.server.handlers.ClassRoutingHandler.RoutingMappers.isAllHttpMethods;
+
 import java.util.List;
 import java.util.Map;
 
@@ -39,11 +41,11 @@ public interface RuntimeResourceVisitor {
             }
             ClassRoutingHandler classRoutingHandler = (ClassRoutingHandler) firstHandler;
 
-            Map<String, RequestMapper<RuntimeResource>> classRoutingHandlerMappers = classRoutingHandler.getMappers();
+            var classRoutingHandlerMappers = classRoutingHandler.getMappers();
             for (Map.Entry<String, RequestMapper<RuntimeResource>> entry : classRoutingHandlerMappers.entrySet()) {
                 String basePath = template;
                 String httpMethod = entry.getKey();
-                if (httpMethod == null) {
+                if (isAllHttpMethods(httpMethod)) {
                     continue; // TODO: fix as to use all methods
                 }
 

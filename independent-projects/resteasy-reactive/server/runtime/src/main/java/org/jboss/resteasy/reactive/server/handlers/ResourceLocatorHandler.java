@@ -1,7 +1,8 @@
 package org.jboss.resteasy.reactive.server.handlers;
 
+import static org.jboss.resteasy.reactive.server.handlers.ClassRoutingHandler.RoutingMappers.*;
+
 import java.util.ArrayList;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -21,7 +22,7 @@ import org.jboss.resteasy.reactive.spi.BeanFactory;
 
 public class ResourceLocatorHandler implements ServerRestHandler {
 
-    private final Map<Class<?>, Map<String, RequestMapper<RuntimeResource>>> resourceLocatorHandlers = new ConcurrentHashMap<>();
+    private final Map<Class<?>, ClassRoutingHandler.RoutingMappers> resourceLocatorHandlers = new ConcurrentHashMap<>();
     private final Function<Class<?>, BeanFactory.BeanInstance<?>> instantiator;
 
     public ResourceLocatorHandler(Function<Class<?>, BeanFactory.BeanInstance<?>> instantiator) {
@@ -54,14 +55,14 @@ public class ResourceLocatorHandler implements ServerRestHandler {
         } else {
             locatorClass = locator.getClass();
         }
-        Map<String, RequestMapper<RuntimeResource>> target = findTarget(locatorClass);
+        var target = findTarget(locatorClass);
         if (target == null) {
             throw new RuntimeException("Resource locator method returned object that was not a resource: " + locator);
         }
         RequestMapper<RuntimeResource> mapper = target.get(requestContext.getMethod());
         boolean hadNullMethodMapper = false;
         if (mapper == null) {
-            mapper = target.get(null); //another layer of resource locators maybe
+            mapper = target.get(allHttpMethods()); //another layer of resource locators maybe
             // we set this without checking if we matched, but we only use it after
             // we check for a null mapper, so by the time we use it, it must have meant that
             // we had a matcher for a null method
@@ -94,46 +95,32 @@ public class ResourceLocatorHandler implements ServerRestHandler {
 
     }
 
-    private Map<String, RequestMapper<RuntimeResource>> findTarget(Class<?> locatorClass) {
+    private ClassRoutingHandler.RoutingMappers findTarget(Class<?> locatorClass) {
         if (locatorClass == Object.class || locatorClass == null) {
             return null;
         }
-        Map<String, RequestMapper<RuntimeResource>> res = resourceLocatorHandlers.get(locatorClass);
+        ClassRoutingHandler.RoutingMappers res = resourceLocatorHandlers.get(locatorClass);
         if (res != null) {
             return res;
         }
         //not found, so we need to compute one
         //we look through all interfaces and superclasses
         //we need to do this as it could implement multiple interfaces
-        List<Map<String, RequestMapper<RuntimeResource>>> results = new ArrayList<>();
+        List<ClassRoutingHandler.RoutingMappers> results = new ArrayList<>();
         Set<Class<?>> seen = new HashSet<>();
         findTargetRecursive(locatorClass, results, seen);
-        Map<String, ArrayList<RequestMapper.RequestPath<RuntimeResource>>> newMapper = new HashMap<>();
-        for (Map<String, RequestMapper<RuntimeResource>> i : results) {
-            for (Map.Entry<String, RequestMapper<RuntimeResource>> entry : i.entrySet()) {
-                ArrayList<RequestMapper.RequestPath<RuntimeResource>> list = newMapper.get(entry.getKey());
-                if (list == null) {
-                    newMapper.put(entry.getKey(), list = new ArrayList<>());
-                }
-                list.addAll(entry.getValue().getTemplates());
-            }
-        }
-        Map<String, RequestMapper<RuntimeResource>> finalResult = new HashMap<>();
-        for (Map.Entry<String, ArrayList<RequestMapper.RequestPath<RuntimeResource>>> i : newMapper.entrySet()) {
-            finalResult.put(i.getKey(), new RequestMapper<RuntimeResource>(i.getValue()));
-        }
-        //it does not matter if this is computed twice
-        resourceLocatorHandlers.put(locatorClass, finalResult);
-        return finalResult;
+        var mappers = ClassRoutingHandler.RoutingMappers.join(results);
+        resourceLocatorHandlers.put(locatorClass, mappers);
+        return mappers;
     }
 
-    private void findTargetRecursive(Class<?> locatorClass, List<Map<String, RequestMapper<RuntimeResource>>> found,
+    private void findTargetRecursive(Class<?> locatorClass, List<ClassRoutingHandler.RoutingMappers> found,
             Set<Class<?>> seen) {
         if (locatorClass == Object.class || locatorClass == null) {
             return;
         }
         boolean superRequired = true;
-        Map<String, RequestMapper<RuntimeResource>> res = resourceLocatorHandlers.get(locatorClass);
+        var res = resourceLocatorHandlers.get(locatorClass);
         if (res != null) {
             found.add(res);
             superRequired = false;
@@ -156,7 +143,7 @@ public class ResourceLocatorHandler implements ServerRestHandler {
         }
     }
 
-    public void addResource(Class<?> resourceClass, Map<String, RequestMapper<RuntimeResource>> requestMapper) {
+    public void addResource(Class<?> resourceClass, ClassRoutingHandler.RoutingMappers requestMapper) {
         Class<?> c = resourceClass;
         resourceLocatorHandlers.put(c, requestMapper);
 

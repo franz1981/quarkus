@@ -1,12 +1,18 @@
 package org.jboss.resteasy.reactive.server.handlers;
 
+import static org.jboss.resteasy.reactive.server.handlers.ClassRoutingHandler.RoutingMappers.allHttpMethods;
+import static org.jboss.resteasy.reactive.server.handlers.ClassRoutingHandler.RoutingMappers.isAllHttpMethods;
+
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.BiConsumer;
 
 import jakarta.ws.rs.HttpMethod;
 import jakarta.ws.rs.NotAcceptableException;
@@ -28,17 +34,12 @@ import org.jboss.resteasy.reactive.server.spi.ServerRestHandler;
 public class ClassRoutingHandler implements ServerRestHandler {
     private static final String INVALID_ACCEPT_HEADER_MESSAGE = "The accept header value did not match the value in @Produces";
 
-    private final Map<String, RequestMapper<RuntimeResource>> mappers;
+    private final RoutingMappers mappers;
     private final int parameterOffset;
     final boolean resumeOn404;
 
-    public ClassRoutingHandler(Map<String, RequestMapper<RuntimeResource>> mappers, int parameterOffset, boolean resumeOn404) {
-        if (mappers.size() == 1) {
-            var entry = mappers.entrySet().iterator().next();
-            this.mappers = Map.of(entry.getKey(), entry.getValue());
-        } else {
-            this.mappers = mappers;
-        }
+    public ClassRoutingHandler(RoutingMappers mappers, int parameterOffset, boolean resumeOn404) {
+        this.mappers = mappers;
         this.parameterOffset = parameterOffset;
         this.resumeOn404 = resumeOn404;
     }
@@ -52,8 +53,8 @@ public class ClassRoutingHandler implements ServerRestHandler {
                 mapper = mappers.get(HttpMethod.GET);
             } else if (requestMethod.equals(HttpMethod.OPTIONS)) {
                 Set<String> allowedMethods = new HashSet<>();
-                for (String method : mappers.keySet()) {
-                    if (method == null) {
+                for (String method : mappers.mutableHttpMethods()) {
+                    if (isAllHttpMethods(method)) {
                         continue;
                     }
                     allowedMethods.add(method);
@@ -64,12 +65,12 @@ public class ClassRoutingHandler implements ServerRestHandler {
                 return;
             }
             if (mapper == null) {
-                mapper = mappers.get(null);
+                mapper = mappers.get(allHttpMethods());
             }
             if (mapper == null) {
                 // The idea here is to check if any of the mappers of the class could map the request - if the HTTP Method were correct
                 String remaining = getRemaining(requestContext);
-                for (RequestMapper<RuntimeResource> existingMapper : mappers.values()) {
+                for (RequestMapper<RuntimeResource> existingMapper : mappers.mutableRequestMappers()) {
                     if (existingMapper.map(remaining) != null) {
                         throw new NotAllowedException(
                                 new ResponseBuilderImpl().status(Response.Status.METHOD_NOT_ALLOWED).build());
@@ -91,8 +92,8 @@ public class ClassRoutingHandler implements ServerRestHandler {
 
             if (target == null) {
                 // The idea here is to check if any of the mappers of the class could map the request - if the HTTP Method were correct
-                for (Map.Entry<String, RequestMapper<RuntimeResource>> entry : mappers.entrySet()) {
-                    if (entry.getKey() == null) {
+                for (Map.Entry<String, RequestMapper<RuntimeResource>> entry : mappers.mutableEntrySet()) {
+                    if (isAllHttpMethods(entry.getKey())) {
                         continue;
                     }
                     if (entry.getKey().equals(requestContext.getMethod())) {
@@ -242,7 +243,138 @@ public class ClassRoutingHandler implements ServerRestHandler {
         return requestContext.getRemaining().isEmpty() ? "/" : requestContext.getRemaining();
     }
 
-    public Map<String, RequestMapper<RuntimeResource>> getMappers() {
+    public RoutingMappers getMappers() {
         return mappers;
+    }
+
+    public static final class RoutingMappers {
+        private static final String ALL_HTTP_METHODS = "";
+        private final Map<String, RequestMapper<RuntimeResource>> mappers;
+        private Map<String, RequestMapper<RuntimeResource>> immutableMappers;
+
+        private RoutingMappers(Map<String, RequestMapper<RuntimeResource>> mappers,
+                Map<String, RequestMapper<RuntimeResource>> immutableMappers) {
+            this.mappers = mappers;
+            this.immutableMappers = immutableMappers;
+        }
+
+        public static Builder builder() {
+            return new Builder();
+        }
+
+        private Set<String> mutableHttpMethods() {
+            return mappers.keySet();
+        }
+
+        public static String allHttpMethods() {
+            return ALL_HTTP_METHODS;
+        }
+
+        public static boolean isAllHttpMethods(String mappersKey) {
+            return ALL_HTTP_METHODS.equals(mappersKey);
+        }
+
+        public RequestMapper<RuntimeResource> get(String httpMethod) {
+            if (httpMethod == null) {
+                throw new NullPointerException();
+            }
+            return mappers.get(httpMethod);
+        }
+
+        private Set<Map.Entry<String, RequestMapper<RuntimeResource>>> mutableEntrySet() {
+            return mappers.entrySet();
+        }
+
+        public Set<Map.Entry<String, RequestMapper<RuntimeResource>>> entrySet() {
+            var immutableMappers = this.immutableMappers;
+            if (immutableMappers == null) {
+                immutableMappers = Collections.unmodifiableMap(mappers);
+                this.immutableMappers = immutableMappers;
+            }
+            return immutableMappers.entrySet();
+        }
+
+        private Collection<RequestMapper<RuntimeResource>> mutableRequestMappers() {
+            return this.mappers.values();
+        }
+
+        public void forEach(BiConsumer<String, RequestMapper<RuntimeResource>> consumer) {
+            mappers.forEach(consumer);
+        }
+
+        public static class Builder {
+            private Map<String, RequestMapper<RuntimeResource>> mappers = new HashMap<>();
+
+            /**
+             * In order to specify a mapper for all HTTP methods, use {@code null} as the {@code httpMethod}.<br>
+             * The resulting {@link RoutingMappers} will map it to {@link RoutingMappers#allHttpMethods()}.
+             */
+            public Builder addMapper(String httpMethod, RequestMapper<RuntimeResource> mapper) {
+                var mappers = this.mappers;
+                if (mappers == null) {
+                    // this can happen if the Builder is reused
+                    mappers = new HashMap<>();
+                    this.mappers = mappers;
+                }
+                mappers.put(asMappingKey(httpMethod), mapper);
+                return this;
+            }
+
+            public RoutingMappers build() {
+                var mappers = this.mappers;
+                this.mappers = null;
+                return fromMap(mappers);
+            }
+
+            private static RoutingMappers fromMap(Map<String, RequestMapper<RuntimeResource>> mappers) {
+                int mappings = mappers.size();
+                final Map<String, RequestMapper<RuntimeResource>> unsafeMappers;
+                final Map<String, RequestMapper<RuntimeResource>> immutableMappers;
+                if (mappings == 0) {
+                    unsafeMappers = Map.of();
+                    immutableMappers = unsafeMappers;
+                } else if (mappings == 1) {
+                    unsafeMappers = Map.copyOf(mappers);
+                    immutableMappers = unsafeMappers;
+                } else {
+                    unsafeMappers = mappers;
+                    // let the mappers lazily populate it on demand
+                    immutableMappers = null;
+                }
+                return new RoutingMappers(unsafeMappers, immutableMappers);
+            }
+        }
+
+        private static String asMappingKey(String httpMethod) {
+            if (httpMethod == null) {
+                return ALL_HTTP_METHODS;
+            }
+            if (isAllHttpMethods(httpMethod)) {
+                throw new IllegalArgumentException(
+                        "httpMethod cannot be an empty string which is a reserved value for all HTTP methods");
+            }
+            return httpMethod;
+        }
+
+        public static RoutingMappers join(Iterable<RoutingMappers> mappers) {
+            Map<String, ArrayList<RequestMapper.RequestPath<RuntimeResource>>> newMapper = new HashMap<>();
+            for (RoutingMappers mapper : mappers) {
+                for (Map.Entry<String, RequestMapper<RuntimeResource>> entry : mapper.mutableEntrySet()) {
+                    assert entry.getKey() != null;
+                    ArrayList<RequestMapper.RequestPath<RuntimeResource>> list = newMapper.get(entry.getKey());
+                    if (list == null) {
+                        newMapper.put(entry.getKey(), list = new ArrayList<>());
+                    }
+                    list.addAll(entry.getValue().getTemplates());
+                }
+            }
+            Map<String, RequestMapper<RuntimeResource>> finalResult = new HashMap<>();
+            for (Map.Entry<String, ArrayList<RequestMapper.RequestPath<RuntimeResource>>> i : newMapper.entrySet()) {
+                assert i.getKey() != null;
+                finalResult.put(i.getKey(), new RequestMapper<>(i.getValue()));
+            }
+            return Builder.fromMap(finalResult);
+        }
+
     }
 }

@@ -1,6 +1,7 @@
 package io.quarkus.resteasy.reactive.server.runtime.observability;
 
 import static io.quarkus.resteasy.reactive.server.runtime.observability.ObservabilityUtil.*;
+import static org.jboss.resteasy.reactive.server.handlers.ClassRoutingHandler.RoutingMappers.*;
 
 import jakarta.ws.rs.HttpMethod;
 
@@ -77,7 +78,7 @@ public class ObservabilityIntegrationRecorder {
                         mapper = mappers.get(HttpMethod.GET);
                     }
                     if (mapper == null) {
-                        mapper = mappers.get(null);
+                        mapper = mappers.get(allHttpMethods());
                     }
                     if (mapper == null) {
                         // can't match the path
