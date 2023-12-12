@@ -43,7 +43,6 @@ class SubstringMap<V> {
         }
         Object[] table = this.table;
         int hash = hash(key, length);
-        assert hash == key.substring(0, length).hashCode();
         int pos = tablePos(table, hash);
         int start = pos;
         while (table[pos] != null) {
@@ -71,6 +70,7 @@ class SubstringMap<V> {
         }
         if (length == value.length()) {
             // this would enable StringLatin1::hashCode to avoid bound checks
+            // It's safe to rely on it because String::hashCode is stable and documented on String's javadoc
             return value.hashCode();
         }
         int h = 0;
