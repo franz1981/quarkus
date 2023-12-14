@@ -78,4 +78,41 @@ public class HttpHeadersTest {
         Assertions.assertTrue(-1 < content.indexOf("*/*"));
         response.close();
     }
+
+    @Test
+    @DisplayName("Request Headers Test")
+    public void RequestHeadersTestWithLastWildcardMatch() throws Exception {
+        String errorMessage = "Wrong content of response";
+        Response response = client.target(generateURL("/HeadersTest/headers")).request()
+                .header("Accept", "text/html, application/xhtml+xml, application/xml;q=0.9, */*;q=0.8")
+                .header("Content-Type", "application/xml;charset=utf8").get();
+        Assertions.assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+        String content = response.readEntity(String.class);
+        Assertions.assertTrue(-1 < content.indexOf("Accept:"));
+        Assertions.assertTrue(-1 < content.indexOf("Content-Type:"));
+        Assertions.assertTrue(-1 < content.indexOf("application/xml"));
+        Assertions.assertTrue(-1 < content.indexOf("charset=utf8"));
+        Assertions.assertTrue(-1 < content.indexOf("text/html"));
+        Assertions.assertTrue(-1 < content.indexOf("*/*"));
+        response.close();
+    }
+
+    @Test
+    @DisplayName("Request Headers Test")
+    public void RequestHeadersTestWithSecondCompatible() throws Exception {
+        String errorMessage = "Wrong content of response";
+        Response response = client.target(generateURL("/HeadersTest/headers")).request()
+                .header("Accept", "text/html, */*")
+                .header("Content-Type", "application/xml;charset=utf8").get();
+        Assertions.assertEquals(Response.Status.OK.getStatusCode(), response.getStatus());
+        String content = response.readEntity(String.class);
+        Assertions.assertTrue(-1 < content.indexOf("Accept:"));
+        Assertions.assertTrue(-1 < content.indexOf("Content-Type:"));
+        Assertions.assertTrue(-1 < content.indexOf("application/xml"));
+        Assertions.assertTrue(-1 < content.indexOf("charset=utf8"));
+        Assertions.assertTrue(-1 < content.indexOf("text/html"));
+        Assertions.assertTrue(-1 < content.indexOf("*/*"));
+        response.close();
+    }
+
 }

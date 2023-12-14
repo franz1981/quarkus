@@ -19,6 +19,7 @@ import jakarta.ws.rs.core.Response;
 public class MediaTypeHelper {
     public static final MediaTypeComparator Q_COMPARATOR = new MediaTypeComparator("q");
     public static final MediaTypeComparator QS_COMPARATOR = new MediaTypeComparator("qs");
+    private static final Comparator<MediaType> REVERSED_NO_PARAMS_TYPE_COMPARATOR = new MediaTypeComparator().reversed();
     private static final String MEDIA_TYPE_SUFFIX_DELIM = "+";
 
     private static float getQTypeWithParamInfo(MediaType type, String parameterName) {
@@ -76,26 +77,33 @@ public class MediaTypeHelper {
 
         private final String parameterName;
 
+        public MediaTypeComparator() {
+            this(null);
+        }
+
         public MediaTypeComparator(String parameterName) {
             this.parameterName = parameterName;
         }
 
         public int compare(MediaType mediaType2, MediaType mediaType) {
-            float q = getQTypeWithParamInfo(mediaType, parameterName);
-            boolean wasQ = q != 2.0f;
-            if (q == 2.0f)
-                q = 1.0f;
+            boolean wasQ = false;
+            boolean wasQ2 = false;
+            if (parameterName != null) {
+                float q = getQTypeWithParamInfo(mediaType, parameterName);
+                wasQ = q != 2.0f;
+                if (q == 2.0f)
+                    q = 1.0f;
 
-            float q2 = getQTypeWithParamInfo(mediaType2, parameterName);
-            boolean wasQ2 = q2 != 2.0f;
-            if (q2 == 2.0f)
-                q2 = 1.0f;
+                float q2 = getQTypeWithParamInfo(mediaType2, parameterName);
+                wasQ2 = q2 != 2.0f;
+                if (q2 == 2.0f)
+                    q2 = 1.0f;
 
-            if (q < q2)
-                return -1;
-            if (q > q2)
-                return 1;
-
+                if (q < q2)
+                    return -1;
+                if (q > q2)
+                    return 1;
+            }
             if (mediaType.isWildcardType() && !mediaType2.isWildcardType())
                 return -1;
             if (!mediaType.isWildcardType() && mediaType2.isWildcardType())
@@ -116,7 +124,9 @@ public class MediaTypeHelper {
                 return -1;
             if (!isWildcardCompositeSubtype(mediaType.getSubtype()) && isWildcardCompositeSubtype(mediaType2.getSubtype()))
                 return 1;
-
+            if (parameterName == null) {
+                return 0;
+            }
             int numNonQ = 0;
             if (mediaType.getParameters() != null) {
                 numNonQ = mediaType.getParameters().size();
@@ -149,6 +159,17 @@ public class MediaTypeHelper {
         int countMediaTypes1 = countMatchingMediaTypes(produces, mediaTypes1);
         int countMediaTypes2 = countMatchingMediaTypes(produces, mediaTypes2);
         return (countMediaTypes1 < countMediaTypes2) ? 1 : ((countMediaTypes1 == countMediaTypes2) ? 0 : -1);
+    }
+
+    public static int reverseCompareNoWeight(MediaType one, MediaType two) {
+        return REVERSED_NO_PARAMS_TYPE_COMPARATOR.compare(one, two);
+    }
+
+    public static void reversedSortNoWeight(List<MediaType> types) {
+        if (hasAtMostOneItem(types)) {
+            return;
+        }
+        types.sort(REVERSED_NO_PARAMS_TYPE_COMPARATOR);
     }
 
     public static void sortByWeight(List<MediaType> types) {

@@ -170,37 +170,7 @@ public class ClassRoutingHandler implements ServerRestHandler {
                 MediaType providedMediaType = producesMediaTypes[0];
                 return providedMediaType.isCompatible(toMediaType(accepts.trim()));
             } else if (multipleAcceptsValues && (producesMediaTypes.length == 1)) {
-                // blind fixed-cost attempt for accepts which end up with something like */*;q=0.9
-                int acceptLen = accepts.length();
-                // indexOf works at its best when the string is long enough
-                if (acceptLen >= 16) {
-                    if (accepts.indexOf("*/*", acceptLen - 16) != -1) {
-                        return true;
-                    }
-                }
-                boolean compatible = false;
-                int begin = 0;
-                do {
-                    String acceptPart;
-                    if (commaIndex == -1) { // this is the case where we are checking the remainder of the string
-                        acceptPart = accepts.substring(begin);
-                    } else {
-                        acceptPart = accepts.substring(begin, commaIndex);
-                    }
-                    if (producesMediaTypes[0].isCompatible(toMediaType(acceptPart.trim()))) {
-                        compatible = true;
-                        break;
-                    } else if (commaIndex == -1) { // we have reached the end and not found any compatible media types
-                        break;
-                    }
-                    begin = commaIndex + 1; // the next part will start at the character after the comma
-                    if (begin >= (accepts.length() - 1)) { // if we have reached this point, then are no compatible media types
-                        break;
-                    }
-                    commaIndex = accepts.indexOf(',', begin);
-                } while (true);
-
-                return compatible;
+                return isAccepted(accepts, commaIndex, producesMediaTypes[0]);
             } else {
                 // don't use any of the JAX-RS stuff from the various MediaType helper as we want to be as performant as possible
                 List<MediaType> acceptsMediaTypes;
@@ -220,6 +190,60 @@ public class ClassRoutingHandler implements ServerRestHandler {
         }
 
         return true;
+    }
+
+    private boolean isAccepted(String accepts, int commaIndex, MediaType producesMediaType) {
+        // check the first one met the criteria, if not, then we need to check the rest
+        var firstMediaType = toMediaType(accepts.substring(0, commaIndex).trim());
+        if (producesMediaType.isCompatible(firstMediaType)) {
+            return true;
+        }
+        int begin = commaIndex + 1; // the next part will start at the character after the comma
+        if (begin >= (accepts.length() - 1)) { // if we have reached this point, then are no compatible media types
+            return false;
+        }
+        commaIndex = accepts.indexOf(',', begin);
+        // encode the rest and sort it: uses 4 because of 16 + (4 * 4) = 32 that's 8-bytes aligned Object[] size
+        final int INITIAL_CAPACITY = 4;
+        ArrayList<MediaType> acceptsMediaTypes = null;
+        do {
+            String acceptPart;
+            if (commaIndex == -1) { // this is the case where we are checking the remainder of the string
+                acceptPart = accepts.substring(begin);
+            } else {
+                acceptPart = accepts.substring(begin, commaIndex);
+            }
+            var mediaType = toMediaType(acceptPart.trim());
+            if (commaIndex == -1) { // we have reached the end...
+                if (acceptsMediaTypes == null) {
+                    // ...with just another media type, we can fail-fast
+                    return mediaType.isCompatible(producesMediaType);
+                }
+                acceptsMediaTypes.add(mediaType);
+                break;
+            }
+            begin = commaIndex + 1; // the next part will start at the character after the comma
+            if (begin >= (accepts.length() - 1)) { // if we have reached this point, then are no compatible media types
+                break;
+            }
+            commaIndex = accepts.indexOf(',', begin);
+            if (acceptsMediaTypes == null) {
+                acceptsMediaTypes = new ArrayList<>(INITIAL_CAPACITY);
+            }
+            acceptsMediaTypes.add(mediaType);
+        } while (true);
+        // we don't care here about the quality factor as we are just checking if there is ANY compatible media type
+        MediaTypeHelper.reversedSortNoWeight(acceptsMediaTypes);
+        // if the first media type has a wider compatibility range than the top of the rest, we can just fail-fast
+        if (MediaTypeHelper.reverseCompareNoWeight(firstMediaType, acceptsMediaTypes.get(0)) < 0) {
+            return false;
+        }
+        for (int i = 0; i < acceptsMediaTypes.size(); i++) {
+            if (producesMediaType.isCompatible(acceptsMediaTypes.get(i))) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private MediaType toMediaType(String mediaTypeStr) {
