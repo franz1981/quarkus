@@ -21,6 +21,7 @@ public class ServerMediaType {
     private final MediaType[] sortedMediaTypes;
     private final MediaType[] sortedOriginalMediaTypes;
     private final MediaType hardCoded;
+    private String hardCodedValue;
 
     public static List<MediaType> mediaTypesFromArray(String[] mediaTypesStrs) {
         List<MediaType> mediaTypes = new ArrayList<>(mediaTypesStrs.length);
@@ -92,6 +93,48 @@ public class ServerMediaType {
         } else {
             hardCoded = null;
         }
+    }
+
+    public boolean isRawAcceptedWithSingleProduces(String accept, int length) {
+        var singleProduces = getHardCodedValueNoParams();
+        if (singleProduces == null) {
+            return false;
+        }
+        // manually skip white spaces front and back
+        int start = 0;
+        while (start < length && accept.charAt(start) == ' ') {
+            start++;
+        }
+        int end = length - 1;
+        while (end > start && accept.charAt(end) == ' ') {
+            end--;
+        }
+        int trimmedAcceptLength = end - start + 1;
+        if (trimmedAcceptLength == 3 && "*/*".regionMatches(0, accept, start, 3)) {
+            return true;
+        }
+        // WARNING: this is strict for security reasons ie a malformed accept header element will not match
+        //          otherwise we would have been forced to parse the rest of accept header (eg params)
+        //          see https://www.rfc-editor.org/rfc/rfc2616#section-14.1
+        if (trimmedAcceptLength == singleProduces.length() &&
+                singleProduces.regionMatches(0, accept, start, singleProduces.length())) {
+            return true;
+        }
+        return false;
+    }
+
+    private String getHardCodedValueNoParams() {
+        var value = hardCodedValue;
+        if (value == null) {
+            var type = hardCoded;
+            if (type == null) {
+                return null;
+            }
+            // produce a string representation without parameters
+            value = type.getType() + '/' + type.getSubtype();
+            hardCodedValue = value;
+        }
+        return value;
     }
 
     /**
