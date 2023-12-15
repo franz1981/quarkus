@@ -8,6 +8,7 @@ import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.CompletionStage;
 import java.util.concurrent.Executor;
@@ -52,7 +53,7 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
     private final Executor contextExecutor;
     private final ClassLoader devModeTccl;
     protected Consumer<ResteasyReactiveRequestContext> preCommitTask;
-    ContinueState continueState = ContinueState.NONE;
+    private ContinueState continueState = null;
 
     public VertxResteasyReactiveRequestContext(Deployment deployment,
             RoutingContext context,
@@ -64,11 +65,8 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
         this.response = context.response();
         this.devModeTccl = devModeTccl;
         context.addHeadersEndHandler(this);
-        String expect = request.getHeader(HttpHeaderNames.EXPECT);
+        continueState = null;
         Context current = Vertx.currentContext();
-        if (expect != null && expect.equalsIgnoreCase(CONTINUE)) {
-            continueState = ContinueState.REQUIRED;
-        }
         this.contextExecutor = new Executor() {
             @Override
             public void execute(Runnable command) {
@@ -81,6 +79,30 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
             }
         };
         request.pause();
+    }
+
+    boolean compareAndSetContinueState(ContinueState expect, ContinueState update) {
+        Objects.requireNonNull(expect);
+        Objects.requireNonNull(update);
+        var state = continueState;
+        if (state == null) {
+            // the possible initial values are just REQUIRED and NONE: this cannot happen
+            if (expect == ContinueState.SENT) {
+                return false;
+            }
+            String expectHeaderValue = request.getHeader(HttpHeaderNames.EXPECT);
+            if (expectHeaderValue != null && expectHeaderValue.equalsIgnoreCase(CONTINUE)) {
+                state = ContinueState.REQUIRED;
+            } else {
+                state = ContinueState.NONE;
+            }
+        }
+        if (state == expect) {
+            continueState = update;
+            return true;
+        }
+        continueState = state;
+        return false;
     }
 
     @Override
@@ -251,8 +273,7 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
 
     @Override
     public ServerHttpResponse resumeRequestInput() {
-        if (continueState == ContinueState.REQUIRED) {
-            continueState = ContinueState.SENT;
+        if (compareAndSetContinueState(ContinueState.REQUIRED, ContinueState.SENT)) {
             response.writeContinue();
         }
         request.resume();
@@ -267,8 +288,7 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
             return this;
         }
         request.pause();
-        if (continueState == ContinueState.REQUIRED) {
-            continueState = ContinueState.SENT;
+        if (compareAndSetContinueState(ContinueState.REQUIRED, ContinueState.SENT)) {
             response.writeContinue();
         }
         request.handler(new Handler<Buffer>() {

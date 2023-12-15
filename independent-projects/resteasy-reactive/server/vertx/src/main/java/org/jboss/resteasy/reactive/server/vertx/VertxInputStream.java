@@ -78,8 +78,9 @@ public class VertxInputStream extends InputStream {
         if (closed) {
             throw new IOException("Stream is closed");
         }
-        if (vertxResteasyReactiveRequestContext.continueState == VertxResteasyReactiveRequestContext.ContinueState.REQUIRED) {
-            vertxResteasyReactiveRequestContext.continueState = VertxResteasyReactiveRequestContext.ContinueState.SENT;
+        if (vertxResteasyReactiveRequestContext.compareAndSetContinueState(
+                VertxResteasyReactiveRequestContext.ContinueState.REQUIRED,
+                VertxResteasyReactiveRequestContext.ContinueState.SENT)) {
             vertxResteasyReactiveRequestContext.response.writeContinue();
         }
         readIntoBuffer();
