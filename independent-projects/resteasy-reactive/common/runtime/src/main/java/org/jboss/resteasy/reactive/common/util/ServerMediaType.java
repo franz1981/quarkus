@@ -110,9 +110,6 @@ public class ServerMediaType {
             end--;
         }
         int trimmedAcceptLength = end - start + 1;
-        if (trimmedAcceptLength == 3 && "*/*".regionMatches(0, accept, start, 3)) {
-            return true;
-        }
         // WARNING: this is strict for security reasons ie a malformed accept header element will not match
         //          otherwise we would have been forced to parse the rest of accept header (eg params)
         //          see https://www.rfc-editor.org/rfc/rfc2616#section-14.1
