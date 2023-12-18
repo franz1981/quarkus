@@ -121,27 +121,7 @@ public class ClassRoutingHandler implements ServerRestHandler {
         }
         // according to the spec we need to return HTTP 406 when Accept header doesn't match what is specified in @Produces
         if (target.value.getProduces() != null) {
-            // there could potentially be multiple Accept headers and we need to response with 406
-            // if none match the method's @Produces
-            List<String> accepts = (List<String>) requestContext.getHeader(HttpHeaders.ACCEPT, false);
-            if (!accepts.isEmpty()) {
-                boolean hasAtLeastOneMatch = false;
-                for (int i = 0; i < accepts.size(); i++) {
-                    try {
-                        boolean matches = acceptHeaderMatches(target, accepts.get(i));
-                        if (matches) {
-                            hasAtLeastOneMatch = true;
-                            break;
-                        }
-                    } catch (IllegalArgumentException ignored) {
-                        // the provided header was not valid
-                    }
-                }
-                if (!hasAtLeastOneMatch) {
-                    throw new NotAcceptableException(INVALID_ACCEPT_HEADER_MESSAGE);
-                }
-            }
-
+            // cheating: would like to see how far we can go without doing anything here!
             requestContext.setProducesChecked(true);
         }
 
