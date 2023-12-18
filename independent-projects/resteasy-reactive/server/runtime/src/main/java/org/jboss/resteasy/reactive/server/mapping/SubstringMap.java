@@ -30,15 +30,11 @@ class SubstringMap<V> {
     }
 
     SubstringMatch<V> get(String key, int length) {
-        return doGet(key, length);
-    }
-
-    SubstringMatch<V> get(String key) {
-        return doGet(key, key.length());
-    }
-
-    private SubstringMatch<V> doGet(String key, int length) {
-        if (key.length() < length) {
+        int keyLength = key.length();
+        if (keyLength == length) {
+            return get(key, keyLength);
+        }
+        if (keyLength < length) {
             throw new IllegalArgumentException();
         }
         Object[] table = this.table;
@@ -60,6 +56,35 @@ class SubstringMap<V> {
         return null;
     }
 
+    SubstringMatch<V> get(String key) {
+        var table = this.table;
+        // String::hashCode intrinsics is vectorized (and cached)
+        int hash = key.hashCode();
+        int pos = tablePos(table, hash);
+        int start = pos;
+        var o = table[pos];
+        if (o == null) {
+            return null;
+        }
+        if (o.equals(key)) {
+            return (SubstringMatch<V>) table[pos + 1];
+        }
+        do {
+            pos += 2;
+            if (pos >= table.length) {
+                pos = 0;
+            }
+            if (pos == start) {
+                return null;
+            }
+            o = table[pos];
+            if (o != null && o.equals(key)) {
+                return (SubstringMatch<V>) table[pos + 1];
+            }
+        } while (o != null);
+        return null;
+    }
+
     private static int tablePos(Object[] table, int hash) {
         return (hash & (table.length - 1)) & ALL_BUT_LAST_BIT;
     }
@@ -75,16 +100,12 @@ class SubstringMap<V> {
         return h;
     }
 
-    private boolean doEquals(String s1, String s2, int length) {
-        if (s1.length() != length || s2.length() < length) {
+    private boolean doEquals(String foundKey, String key, int keyLength) {
+        if (foundKey.length() != keyLength || key.length() < keyLength) {
             return false;
         }
-        for (int i = 0; i < length; ++i) {
-            if (s1.charAt(i) != s2.charAt(i)) {
-                return false;
-            }
-        }
-        return true;
+        assert key.length() != keyLength;
+        return foundKey.regionMatches(0, key, 0, keyLength);
     }
 
     Iterable<String> keys() {
