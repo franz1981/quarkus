@@ -9,7 +9,6 @@ import java.util.Map;
 import java.util.Set;
 
 import jakarta.ws.rs.HttpMethod;
-import jakarta.ws.rs.NotAcceptableException;
 import jakarta.ws.rs.NotAllowedException;
 import jakarta.ws.rs.NotFoundException;
 import jakarta.ws.rs.NotSupportedException;
