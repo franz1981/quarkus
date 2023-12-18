@@ -32,7 +32,7 @@ class SubstringMap<V> {
     SubstringMatch<V> get(String key, int length) {
         int keyLength = key.length();
         if (keyLength == length) {
-            return get(key, keyLength);
+            return get(key);
         }
         if (keyLength < length) {
             throw new IllegalArgumentException();
@@ -101,7 +101,7 @@ class SubstringMap<V> {
     }
 
     private boolean doEquals(String foundKey, String key, int keyLength) {
-        if (foundKey.length() != keyLength || key.length() < keyLength) {
+        if (foundKey.length() != keyLength) {
             return false;
         }
         assert key.length() != keyLength;
