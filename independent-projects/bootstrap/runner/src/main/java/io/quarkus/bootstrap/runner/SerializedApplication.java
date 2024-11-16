@@ -5,6 +5,7 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.FileVisitor;
 import java.nio.file.Files;
@@ -116,6 +117,9 @@ public class SerializedApplication {
             Set<String> parentFirstPackages = new HashSet<>();
             int numPaths = in.readUnsignedShort();
             ClassLoadingResource[] allClassLoadingResources = new ClassLoadingResource[numPaths];
+            // tmp buffer for reading the directory names
+            // TODO the information of the biggest dirName could be saved somewhere in the serialized form
+            byte[] tmpReadNameBytes = null;
             for (int pathCount = 0; pathCount < numPaths; pathCount++) {
                 String path = in.readUTF();
                 boolean hasManifest = in.readBoolean();
@@ -128,12 +132,28 @@ public class SerializedApplication {
                 allClassLoadingResources[pathCount] = resource;
                 int numDirs = in.readUnsignedShort();
                 for (int i = 0; i < numDirs; ++i) {
-                    String fullDirName = in.readUTF();
+                    int encodedLength = in.readShort();
+                    // negative length indicates that the string is UTF-8 encoded
+                    final boolean isUTF8 = encodedLength < 0;
+                    if (isUTF8) {
+                        encodedLength = -encodedLength;
+                    }
+                    // enlarge the scratch buffer if needed
+                    if (tmpReadNameBytes == null || tmpReadNameBytes.length < encodedLength) {
+                        // let's be generous and double the size, so save further resizes
+                        tmpReadNameBytes = new byte[encodedLength * 2];
+                    }
+                    int readBytes = in.read(tmpReadNameBytes, 0, encodedLength);
+                    assert readBytes == encodedLength;
+                    // TODO not sure if having separate call-sites is better or not: it means compiling 2 methods instead of one!
+                    String fullDirName = isUTF8 ? new String(tmpReadNameBytes, 0, encodedLength, StandardCharsets.UTF_8)
+                            // Save String to verify if the byte[] content really contains negatives!
+                            : new String(tmpReadNameBytes, 0, 0, encodedLength);
                     var dirName = StringView.of(fullDirName);
                     // now try to be smart and save some memory by NOT having substrings over and over again
                     final int subDirs = in.readInt();
                     for (int j = 0; j < subDirs; j++) {
-                        var subDirName = StringView.subOf(fullDirName, in.readInt(), in.readInt());
+                        var subDirName = StringView.subOf(fullDirName, in.readInt(), in.readUnsignedShort());
                         resourceDirectoryTracker.addResourceDir(subDirName, resource);
                     }
                     resourceDirectoryTracker.addResourceDir(dirName, resource);
@@ -150,8 +170,8 @@ public class SerializedApplication {
             }
             // this map is populated correctly because the JarResource entries are added to allClassLoadingResources
             // in the same order as the classpath was written during the writing of the index
-            Map<String, ClassLoadingResource[]> directlyIndexedResourcesIndexMap = new HashMap<>();
             int directlyIndexedSize = in.readUnsignedShort();
+            Map<String, ClassLoadingResource[]> directlyIndexedResourcesIndexMap = new HashMap<>(directlyIndexedSize);
             for (int i = 0; i < directlyIndexedSize; i++) {
                 String resource = in.readUTF();
                 int indexesSize = in.readUnsignedShort();
@@ -254,7 +274,6 @@ public class SerializedApplication {
             out.writeShort(dirs.size());
             for (String dirName : dirs) {
                 // push this a bit forward to help the read to get faster!
-                // TODO: we could check if it's an ASCII string too and further optimize it
                 // write the positions of each / in the string
                 var subDirs = new ArrayList<String>();
                 int subDirLength = dirName.indexOf('/');
@@ -265,12 +284,16 @@ public class SerializedApplication {
                     subDirLength = dirName.indexOf('/', subDirLength + 1);
                 }
                 // write in the opposite order here, to hydrate StringView(s) in the right order
-                out.writeUTF(dirName);
-                // TODO these could be made cheaper
+                var dirNameUtf8 = dirName.getBytes(StandardCharsets.UTF_8);
+                // using a negative length to indicate that the string is UTF-8 encoded, which should be less frequent
+                int writtenLength = dirNameUtf8.length == dirName.length() ? dirName.length() : -dirNameUtf8.length;
+                out.writeShort(writtenLength);
+                out.write(dirNameUtf8);
+                // TODO these could be made cheaper; maybe a short?
                 out.writeInt(subDirs.size());
                 for (String subDir : subDirs) {
                     out.writeInt(subDir.hashCode());
-                    out.writeInt(subDir.length());
+                    out.writeShort(subDir.length());
                 }
             }
             List<String> result = new ArrayList<>();

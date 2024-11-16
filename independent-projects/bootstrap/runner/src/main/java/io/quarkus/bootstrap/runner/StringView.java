@@ -65,7 +65,10 @@ class StringView {
     public static StringView subOf(String s, int hashCode, int length) {
         // we're not performing any specific check at runtime since this is a likely cold path
         // and have to trust the data read from the serialized form
-        assert validateView(s, hashCode, length);
+        // assert validateHashCodeView(s, hashCode, length);
+        if (length < 0) {
+            throw new IllegalArgumentException("Length must be positive or zero");
+        }
         if (length == 0) {
             return EMPTY;
         }
@@ -73,18 +76,13 @@ class StringView {
             return new StringView(s);
         }
         if (length > s.length()) {
-            throw new IllegalArgumentException("Length must be less than or equal to the full string length");
+            throw new IllegalArgumentException("Length must be less than or equal to the full string length: " + s
+                    + " hashCode = " + hashCode + " length = " + length);
         }
         return new SubStringView(s, hashCode, length);
     }
 
-    private static boolean validateView(String s, int hashCode, int length) {
-        if (length < 0) {
-            throw new IllegalArgumentException("Length must be positive");
-        }
-        if (length > s.length()) {
-            throw new IllegalArgumentException("Length must be less than or equal to the full string length");
-        }
+    private static boolean validateHashCodeView(String s, int hashCode, int length) {
         if (s.substring(0, length).hashCode() != hashCode) {
             throw new IllegalArgumentException("Hash code does not match the substring hash code");
         }
