@@ -17,22 +17,22 @@ public class RunnerClassLoaderTest {
 
     @Test
     public void testConcurrentJarCloseAndReload() throws Exception {
-        Map<String, ClassLoadingResource[]> resourceDirectoryMap = new HashMap<>();
+        Map<StringView, ClassLoadingResource[]> resourceDirectoryMap = new HashMap<>();
 
-        resourceDirectoryMap.put("org/simple", new ClassLoadingResource[] {
+        resourceDirectoryMap.put(StringView.of("org/simple"), new ClassLoadingResource[] {
                 createProjectJarResource("simple-project-1.0.jar") });
 
         // These jars are simply used to fill the RunnerClassLoader's jars cache
-        resourceDirectoryMap.put("org/easy", new ClassLoadingResource[] {
+        resourceDirectoryMap.put(StringView.of("org/easy"), new ClassLoadingResource[] {
                 createProjectJarResource("empty-project-a-1.0.jar"), createProjectJarResource("empty-project-b-1.0.jar"),
                 createProjectJarResource("easy-project-1.0.jar") });
 
         // These jars will be used to evict the simple-project-1.0.jar from the cache again
-        resourceDirectoryMap.put("org/evict", new ClassLoadingResource[] {
+        resourceDirectoryMap.put(StringView.of("org/evict"), new ClassLoadingResource[] {
                 createProjectJarResource("empty-project-c-1.0.jar"), createProjectJarResource("empty-project-d-1.0.jar"),
                 createProjectJarResource("empty-project-e-1.0.jar"), createProjectJarResource("evict-project-1.0.jar") });
 
-        resourceDirectoryMap.put("org/trivial", new ClassLoadingResource[] {
+        resourceDirectoryMap.put(StringView.of("org/trivial"), new ClassLoadingResource[] {
                 createProjectJarResource("trivial-project-1.0.jar") });
 
         RunnerClassLoader runnerClassLoader = new RunnerClassLoader(ClassLoader.getSystemClassLoader(), resourceDirectoryMap,

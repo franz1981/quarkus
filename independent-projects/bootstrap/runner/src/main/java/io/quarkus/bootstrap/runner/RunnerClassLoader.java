@@ -36,7 +36,7 @@ public final class RunnerClassLoader extends ClassLoader {
     /**
      * A map of resources by dir name. Root dir/default package is represented by the empty string
      */
-    private final Map<String, ClassLoadingResource[]> resourceDirectoryMap;
+    private final Map<StringView, ClassLoadingResource[]> resourceDirectoryMap;
 
     private final Set<String> parentFirstPackages;
     private final Set<String> nonExistentResources;
@@ -53,7 +53,7 @@ public final class RunnerClassLoader extends ClassLoader {
 
     private final CracResource resource;
 
-    RunnerClassLoader(ClassLoader parent, Map<String, ClassLoadingResource[]> resourceDirectoryMap,
+    RunnerClassLoader(ClassLoader parent, Map<StringView, ClassLoadingResource[]> resourceDirectoryMap,
             Set<String> parentFirstPackages, Set<String> nonExistentResources,
             List<String> fullyIndexedDirectories, Map<String, ClassLoadingResource[]> directlyIndexedResourcesIndexMap) {
         super(parent);
@@ -94,10 +94,9 @@ public final class RunnerClassLoader extends ClassLoader {
         }
         final ClassLoadingResource[] resources;
         if (packageName == null) {
-            resources = resourceDirectoryMap.get("");
+            resources = resourceDirectoryMap.get(StringView.EMPTY);
         } else {
-            String dirName = packageName.replace('.', '/');
-            resources = resourceDirectoryMap.get(dirName);
+            resources = resourceDirectoryMap.get(StringView.of(packageName.replace('.', '/')));
         }
         if (resources != null) {
             String classResource = fromClassNameToResourceName(name);
@@ -237,16 +236,16 @@ public final class RunnerClassLoader extends ClassLoader {
         }
         if (!dirName.equals(name) && fullyIndexedDirectories.contains(dirName)) {
             if (dirName.isEmpty()) {
-                return resourceDirectoryMap.get(name);
+                return resourceDirectoryMap.get(StringView.of(name));
             }
             // If we arrive here, we know that resource being queried belongs to one of the fully indexed directories
             // Had that resource existed however, it would have been present in directlyIndexedResourcesIndexMap
             return null;
         }
-        resources = resourceDirectoryMap.get(dirName);
+        resources = resourceDirectoryMap.get(StringView.of(dirName));
         if (resources == null) {
             // the resource could itself be a directory
-            resources = resourceDirectoryMap.get(name);
+            resources = resourceDirectoryMap.get(StringView.of(name));
         }
         return resources;
     }
@@ -311,7 +310,7 @@ public final class RunnerClassLoader extends ClassLoader {
     }
 
     public void close() {
-        for (Map.Entry<String, ClassLoadingResource[]> entry : resourceDirectoryMap.entrySet()) {
+        for (var entry : resourceDirectoryMap.entrySet()) {
             for (ClassLoadingResource i : entry.getValue()) {
                 i.close();
             }
@@ -320,7 +319,7 @@ public final class RunnerClassLoader extends ClassLoader {
 
     public void resetInternalCaches() {
         synchronized (this.currentlyBufferedResources) {
-            for (Map.Entry<String, ClassLoadingResource[]> entry : resourceDirectoryMap.entrySet()) {
+            for (var entry : resourceDirectoryMap.entrySet()) {
                 for (ClassLoadingResource i : entry.getValue()) {
                     i.resetInternalCaches();
                 }

@@ -38,7 +38,7 @@ public class SerializedApplication {
     private static final List<String> FULLY_INDEXED_PATHS = List.of("", "META-INF/services");
 
     private static final int MAGIC = 0XF0315432;
-    private static final int VERSION = 2;
+    private static final int VERSION = 3;
 
     private static final ClassLoadingResource[] EMPTY_ARRAY = new ClassLoadingResource[0];
     private static final JarResource SENTINEL = new JarResource(null, Path.of("wqxehxivam"));
@@ -66,6 +66,7 @@ public class SerializedApplication {
             data.writeInt(MAGIC);
             data.writeInt(VERSION);
             data.writeUTF(mainClass);
+            // numpaths
             data.writeShort(classPath.size());
             Map<String, List<Integer>> directlyIndexedResourcesToCPJarIndex = new LinkedHashMap<>();
             for (int i = 0; i < classPath.size(); i++) {
@@ -127,13 +128,15 @@ public class SerializedApplication {
                 allClassLoadingResources[pathCount] = resource;
                 int numDirs = in.readUnsignedShort();
                 for (int i = 0; i < numDirs; ++i) {
-                    String dir = in.readUTF();
-                    int j = dir.indexOf('/');
-                    while (j >= 0) {
-                        resourceDirectoryTracker.addResourceDir(dir.substring(0, j), resource);
-                        j = dir.indexOf('/', j + 1);
+                    String fullDirName = in.readUTF();
+                    var dirName = StringView.of(fullDirName);
+                    // now try to be smart and save some memory by NOT having substrings over and over again
+                    final int subDirs = in.readInt();
+                    for (int j = 0; j < subDirs; j++) {
+                        var subDirName = StringView.subOf(fullDirName, in.readInt(), in.readInt());
+                        resourceDirectoryTracker.addResourceDir(subDirName, resource);
                     }
-                    resourceDirectoryTracker.addResourceDir(dir, resource);
+                    resourceDirectoryTracker.addResourceDir(dirName, resource);
                 }
             }
             int packages = in.readUnsignedShort();
@@ -249,8 +252,26 @@ public class SerializedApplication {
                 dirs.add("");
             }
             out.writeShort(dirs.size());
-            for (String i : dirs) {
-                out.writeUTF(i);
+            for (String dirName : dirs) {
+                // push this a bit forward to help the read to get faster!
+                // TODO: we could check if it's an ASCII string too and further optimize it
+                // write the positions of each / in the string
+                var subDirs = new ArrayList<String>();
+                int subDirLength = dirName.indexOf('/');
+                while (subDirLength >= 0) {
+                    var subDirName = dirName.substring(0, subDirLength);
+                    subDirName.hashCode();
+                    subDirs.add(subDirName);
+                    subDirLength = dirName.indexOf('/', subDirLength + 1);
+                }
+                // write in the opposite order here, to hydrate StringView(s) in the right order
+                out.writeUTF(dirName);
+                // TODO these could be made cheaper
+                out.writeInt(subDirs.size());
+                for (String subDir : subDirs) {
+                    out.writeInt(subDir.hashCode());
+                    out.writeInt(subDir.length());
+                }
             }
             List<String> result = new ArrayList<>();
             for (List<String> values : fullyIndexedPaths.values()) {
@@ -327,10 +348,10 @@ public class SerializedApplication {
      * The reason for doing it this way to only create Sets when needed (which is only a fraction of the cases)
      */
     private static class ResourceDirectoryTracker {
-        private final Map<String, ClassLoadingResource[]> result = new HashMap<>();
-        private final Map<String, Set<ClassLoadingResource>> overrides = new HashMap<>();
+        private final Map<StringView, ClassLoadingResource[]> result = new HashMap<>();
+        private final Map<StringView, Set<ClassLoadingResource>> overrides = new HashMap<>();
 
-        void addResourceDir(String dir, JarResource resource) {
+        void addResourceDir(StringView dir, JarResource resource) {
             ClassLoadingResource[] existing = result.get(dir);
             if (existing == null) {
                 // this is the first the dir was ever tracked
@@ -361,12 +382,12 @@ public class SerializedApplication {
             }
         }
 
-        Map<String, ClassLoadingResource[]> getResult() {
+        Map<StringView, ClassLoadingResource[]> getResult() {
             overrides.forEach(this::addToResult);
             return result;
         }
 
-        private void addToResult(String dir, Set<? extends ClassLoadingResource> jarResources) {
+        private void addToResult(StringView dir, Set<? extends ClassLoadingResource> jarResources) {
             result.put(dir, jarResources.toArray(EMPTY_ARRAY));
         }
     }
