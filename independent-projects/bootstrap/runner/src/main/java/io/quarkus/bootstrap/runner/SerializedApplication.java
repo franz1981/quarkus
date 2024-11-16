@@ -120,6 +120,7 @@ public class SerializedApplication {
             // tmp buffer for reading the directory names
             // TODO the information of the biggest dirName could be saved somewhere in the serialized form
             byte[] tmpReadNameBytes = null;
+            var reusableSubView = StringView.emptySub();
             for (int pathCount = 0; pathCount < numPaths; pathCount++) {
                 String path = in.readUTF();
                 boolean hasManifest = in.readBoolean();
@@ -153,8 +154,15 @@ public class SerializedApplication {
                     // now try to be smart and save some memory by NOT having substrings over and over again
                     final int subDirs = in.readInt();
                     for (int j = 0; j < subDirs; j++) {
-                        var subDirName = StringView.subOf(fullDirName, in.readInt(), in.readUnsignedShort());
-                        resourceDirectoryTracker.addResourceDir(subDirName, resource);
+                        // try reuse the same StringView instance: if the tracker already contains it, which is
+                        // very common, we can avoid creating a new instance
+                        reusableSubView.with(fullDirName, in.readInt(), in.readUnsignedShort());
+                        if (resourceDirectoryTracker.addResourceDir(reusableSubView, resource)) {
+                            // we need to create a new StringView instance, as the ownership has been taken over
+                            reusableSubView = StringView.emptySub();
+                        } else {
+                            reusableSubView.reset();
+                        }
                     }
                     resourceDirectoryTracker.addResourceDir(dirName, resource);
                 }
@@ -374,17 +382,20 @@ public class SerializedApplication {
         private final Map<StringView, ClassLoadingResource[]> result = new HashMap<>();
         private final Map<StringView, Set<ClassLoadingResource>> overrides = new HashMap<>();
 
-        void addResourceDir(StringView dir, JarResource resource) {
+        /**
+         * It returns true if the StringView ownership has been taken over by the tracker
+         */
+        boolean addResourceDir(StringView dir, JarResource resource) {
             ClassLoadingResource[] existing = result.get(dir);
             if (existing == null) {
                 // this is the first the dir was ever tracked
                 result.put(dir, new JarResource[] { resource });
+                return true;
             } else {
                 ClassLoadingResource existingResource = existing[0];
-                if (existingResource.equals(resource)) {
-                    // we don't need to do anything as the resource has already been tracked and an attempt
-                    // to add it again was made
-                } else {
+                // we don't need to do anything as the resource has already been tracked and an attempt
+                // to add it again was made
+                if (!existingResource.equals(resource)) {
                     Set<ClassLoadingResource> dirOverrides = overrides.get(dir);
                     if (dirOverrides == null) {
                         // we need to create the override set as this is the first time we find a resource for the dir
@@ -393,15 +404,17 @@ public class SerializedApplication {
                         dirOverrides.add(existingResource);
                         dirOverrides.add(resource);
                         overrides.put(dir, dirOverrides);
-
                         //replace the value in the original array with a sentinel in order to allow for quick comparisons
                         existing[0] = SENTINEL;
+                        return true;
                     } else {
                         // in this case, overrides has already been created in a previous invocation so all we need to
                         // do is add the new resource
                         dirOverrides.add(resource);
+                        return false;
                     }
                 }
+                return false;
             }
         }
 

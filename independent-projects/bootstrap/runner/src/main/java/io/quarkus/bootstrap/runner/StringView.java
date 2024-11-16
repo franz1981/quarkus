@@ -2,20 +2,46 @@ package io.quarkus.bootstrap.runner;
 
 class StringView {
 
-    private final String s;
+    protected String s;
 
     private StringView(String s) {
         this.s = s;
     }
 
-    private static final class SubStringView extends StringView {
-        private final int hash;
-        private final int length;
+    private StringView() {
+    }
 
-        private SubStringView(String fullString, int hash, int length) {
-            super(fullString);
-            this.hash = hash;
+    public static SubStringView emptySub() {
+        return new SubStringView();
+    }
+
+    public static final class SubStringView extends StringView {
+        private int hash;
+        private int length;
+
+        private SubStringView() {
+        }
+
+        public void with(String s, int hashCode, int length) {
+            // we're not performing any specific check at runtime since this is a likely cold path
+            // and have to trust the data read from the serialized form
+            // assert validateHashCodeView(s, hashCode, length);
+            if (length < 0) {
+                throw new IllegalArgumentException("Length must be positive or zero");
+            }
+            if (length > s.length()) {
+                throw new IllegalArgumentException("Length must be less than or equal to the full string length: " + s
+                        + " hashCode = " + hashCode + " length = " + length);
+            }
+            this.s = s;
+            this.hash = hashCode;
             this.length = length;
+        }
+
+        public void reset() {
+            s = null;
+            hash = 0;
+            length = 0;
         }
     }
 
@@ -61,33 +87,6 @@ class StringView {
     }
 
     public static final StringView EMPTY = new StringView("");
-
-    public static StringView subOf(String s, int hashCode, int length) {
-        // we're not performing any specific check at runtime since this is a likely cold path
-        // and have to trust the data read from the serialized form
-        // assert validateHashCodeView(s, hashCode, length);
-        if (length < 0) {
-            throw new IllegalArgumentException("Length must be positive or zero");
-        }
-        if (length == 0) {
-            return EMPTY;
-        }
-        if (length == s.length()) {
-            return new StringView(s);
-        }
-        if (length > s.length()) {
-            throw new IllegalArgumentException("Length must be less than or equal to the full string length: " + s
-                    + " hashCode = " + hashCode + " length = " + length);
-        }
-        return new SubStringView(s, hashCode, length);
-    }
-
-    private static boolean validateHashCodeView(String s, int hashCode, int length) {
-        if (s.substring(0, length).hashCode() != hashCode) {
-            throw new IllegalArgumentException("Hash code does not match the substring hash code");
-        }
-        return true;
-    }
 
     public static StringView of(String s) {
         return new StringView(s);
