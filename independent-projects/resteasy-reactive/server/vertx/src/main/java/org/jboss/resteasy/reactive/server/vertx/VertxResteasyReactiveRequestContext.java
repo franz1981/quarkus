@@ -4,6 +4,7 @@ import java.io.ByteArrayInputStream;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.HashMap;
@@ -411,9 +412,7 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
 
     @Override
     public ServerHttpResponse end(String data) {
-        var buffer = VertxByteBufAllocator.POOLED_ALLOCATOR.directBuffer(ByteBufUtil.utf8MaxBytes(data.length()));
-        buffer.writeCharSequence(data, CharsetUtil.UTF_8);
-        response.end(new NoBoundChecksBuffer(buffer), null);
+        response.end(Buffer.buffer(data), null);
         return this;
     }
 
