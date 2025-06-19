@@ -412,7 +412,7 @@ public class VertxResteasyReactiveRequestContext extends ResteasyReactiveRequest
 
     @Override
     public ServerHttpResponse end(String data) {
-        response.end(Buffer.buffer(data), null);
+        response.end(new NoBoundChecksBuffer(Unpooled.wrappedBuffer(data.getBytes(StandardCharsets.UTF_8))), null);
         return this;
     }
 
