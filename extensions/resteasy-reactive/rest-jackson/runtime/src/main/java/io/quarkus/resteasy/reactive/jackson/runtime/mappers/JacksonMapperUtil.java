@@ -1,46 +1,9 @@
 package io.quarkus.resteasy.reactive.jackson.runtime.mappers;
 
-import java.io.IOException;
-import java.lang.reflect.Array;
-import java.lang.reflect.Method;
 import java.lang.reflect.Type;
-import java.math.BigDecimal;
-import java.text.SimpleDateFormat;
-import java.time.Duration;
-import java.time.Instant;
-import java.time.OffsetDateTime;
-import java.time.ZoneId;
-import java.time.ZonedDateTime;
-import java.time.format.DateTimeFormatter;
-import java.time.temporal.TemporalAccessor;
-import java.util.ArrayList;
-import java.util.Collection;
-import java.util.Date;
-import java.util.HashMap;
-import java.util.Iterator;
-import java.util.List;
-import java.util.Map;
-import java.util.Optional;
-import java.util.Set;
-import java.util.TimeZone;
 
-import com.fasterxml.jackson.annotation.JsonInclude;
-import com.fasterxml.jackson.core.JsonGenerator;
-import com.fasterxml.jackson.core.SerializableString;
-import com.fasterxml.jackson.core.filter.FilteringGeneratorDelegate;
-import com.fasterxml.jackson.core.filter.TokenFilter;
-import com.fasterxml.jackson.databind.BeanProperty;
-import com.fasterxml.jackson.databind.DeserializationContext;
 import com.fasterxml.jackson.databind.JavaType;
-import com.fasterxml.jackson.databind.JsonMappingException;
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.JsonSerializer;
 import com.fasterxml.jackson.databind.ObjectWriter;
-import com.fasterxml.jackson.databind.PropertyNamingStrategy;
-import com.fasterxml.jackson.databind.SerializationFeature;
-import com.fasterxml.jackson.databind.SerializerProvider;
-import com.fasterxml.jackson.databind.node.ObjectNode;
-import com.fasterxml.jackson.databind.util.NameTransformer;
 
 import io.quarkus.arc.Arc;
 import io.quarkus.arc.ArcContainer;
@@ -50,102 +13,33 @@ import io.quarkus.security.identity.SecurityIdentity;
 
 public class JacksonMapperUtil {
 
-    private static final Method VISIBILITY_TEST_METHOD;
-    static {
-        try {
-            VISIBILITY_TEST_METHOD = Object.class.getMethod("getClass");
-        } catch (NoSuchMethodException e) {
-            throw new RuntimeException(e);
-        }
-    }
-
-    public static boolean isPublicGetterVisible(SerializerProvider provider) {
-        return provider.getConfig().getDefaultVisibilityChecker()
-                .isGetterVisible(VISIBILITY_TEST_METHOD);
-    }
-
-    public static boolean isPublicIsGetterVisible(SerializerProvider provider) {
-        return provider.getConfig().getDefaultVisibilityChecker()
-                .isIsGetterVisible(VISIBILITY_TEST_METHOD);
-    }
-
-    public static void serializeBooleanAsNumber(boolean value, JsonGenerator generator) throws IOException {
-        generator.writeNumber(value ? 1 : 0);
-    }
-
-    public static void serializeDateAsTimestamp(Date value, JsonGenerator generator) throws IOException {
-        if (value == null) {
-            generator.writeNull();
-            return;
-        }
-        generator.writeNumber(value.getTime());
-    }
-
-    public static void serializeFormattedDate(Object value, String pattern, String timezone,
-            JsonGenerator generator) throws IOException {
-        if (value == null) {
-            generator.writeNull();
-            return;
-        }
-        SimpleDateFormat sdf = new SimpleDateFormat(pattern);
-        if (timezone != null) {
-            sdf.setTimeZone(TimeZone.getTimeZone(timezone));
-        }
-        generator.writeString(sdf.format(value));
-    }
-
-    public static void serializeFormattedTemporal(Object value, String pattern, String timezone,
-            JsonGenerator generator) throws IOException {
-        if (value == null) {
-            generator.writeNull();
-            return;
-        }
-        DateTimeFormatter formatter = DateTimeFormatter.ofPattern(pattern);
-        if (timezone != null) {
-            formatter = formatter.withZone(ZoneId.of(timezone));
-        }
-        generator.writeString(formatter.format((TemporalAccessor) value));
-    }
-
-    public static void serializeTemporalAsTimestamp(Object value, JsonGenerator generator) throws IOException {
-        if (value == null) {
-            generator.writeNull();
-        } else if (value instanceof Instant i) {
-            generator.writeNumber(toBigDecimal(i.getEpochSecond(), i.getNano()));
-        } else if (value instanceof ZonedDateTime zdt) {
-            Instant inst = zdt.toInstant();
-            generator.writeNumber(toBigDecimal(inst.getEpochSecond(), inst.getNano()));
-        } else if (value instanceof OffsetDateTime odt) {
-            Instant inst = odt.toInstant();
-            generator.writeNumber(toBigDecimal(inst.getEpochSecond(), inst.getNano()));
-        } else if (value instanceof Duration d) {
-            generator.writeNumber(toBigDecimal(d.getSeconds(), d.getNano()));
-        } else {
-            generator.writeString(value.toString());
-        }
-    }
-
-    private static BigDecimal toBigDecimal(long seconds, int nanoseconds) {
-        if (nanoseconds == 0) {
-            return BigDecimal.valueOf(seconds);
-        }
-        return new BigDecimal(seconds + "." + String.format("%09d", nanoseconds));
-    }
-
-    public static boolean isViewIncluded(Class<?> activeView, Class<?>[] viewClasses) {
-        if (activeView == null) {
-            return true;
-        }
-        for (Class<?> viewClass : viewClasses) {
-            if (viewClass.isAssignableFrom(activeView)) {
-                return true;
+    public static JavaType getGenericRootType(Type genericType, ObjectWriter defaultWriter) {
+        // Jackson needs additional type information when serializing generic types, as discussed here:
+        // https://github.com/FasterXML/jackson-databind/issues/336 and https://github.com/FasterXML/jackson-databind/issues/23
+        // Parts of the code were taken from org.jboss.resteasy.plugins.providers.jackson.ResteasyJackson2Provider
+        // which was used in quarkus-resteasy to handle this situation.
+        JavaType rootType = null;
+        if (genericType != null) {
+            /*
+             * 10-Jan-2011, tatu: as per [JACKSON-456], it's not safe to just force root
+             * type since it prevents polymorphic type serialization. Since we really
+             * just need this for generics, let's only use generic type if it's truly
+             * generic.
+             */
+            if (genericType.getClass() != Class.class) {
+                rootType = defaultWriter.getTypeFactory().constructType(genericType);
+                /*
+                 * 26-Feb-2011, tatu: To help with [JACKSON-518], we better recognize cases where
+                 * type degenerates back into "Object.class" (as is the case with plain TypeVariable,
+                 * for example), and not use that.
+                 */
+                if (rootType.getRawClass() == Object.class) {
+                    rootType = null;
+                }
             }
         }
-        return false;
-    }
 
-    public static boolean includeSecureField(SerializerProvider serializerProvider, String[] rolesAllowed) {
-        return serializerProvider.getConfig().getFilterProvider() == null || includeSecureField(rolesAllowed);
+        return rootType;
     }
 
     public static boolean includeSecureField(String[] rolesAllowed) {
@@ -176,67 +70,6 @@ public class JacksonMapperUtil {
         return false;
     }
 
-    /**
-     * Writes a field name to the JSON generator, translating through the ObjectMapper's
-     * {@link PropertyNamingStrategy} if one is configured.
-     * When no strategy is set, the pre-encoded {@code defaultName} is used for zero overhead.
-     */
-    public static void writeFieldName(JsonGenerator gen, PropertyNamingStrategy strategy,
-            String javaFieldName, SerializableString defaultName) throws IOException {
-        if (strategy == null) {
-            gen.writeFieldName(defaultName);
-        } else {
-            gen.writeFieldName(strategy.nameForField(null, null, javaFieldName));
-        }
-    }
-
-    /**
-     * Builds a reverse-translation index mapping strategy-translated JSON field names back to
-     * Java field names. Called once at the start of deserialization so that per-field lookups
-     * are O(1) via {@link Map#getOrDefault} instead of O(n) scans.
-     */
-    public static Map<String, String> buildReverseNameIndex(PropertyNamingStrategy strategy,
-            String[] translatableFieldNames) {
-        Map<String, String> index = new HashMap<>();
-        for (String javaName : translatableFieldNames) {
-            index.put(strategy.nameForField(null, null, javaName), javaName);
-        }
-        return index;
-    }
-
-    /**
-     * Determine the root type that should be used for serialization of generic types.
-     * Returns the appropriate root type or {@code null} if default serialization should be used.
-     */
-    public static JavaType getGenericRootType(Type genericType, ObjectWriter defaultWriter) {
-        // Jackson needs additional type information when serializing generic types, as discussed here:
-        // https://github.com/FasterXML/jackson-databind/issues/336 and https://github.com/FasterXML/jackson-databind/issues/23
-        // Parts of the code were taken from org.jboss.resteasy.plugins.providers.jackson.ResteasyJackson2Provider
-        // which was used in quarkus-resteasy to handle this situation.
-        JavaType rootType = null;
-        if (genericType != null) {
-            /*
-             * 10-Jan-2011, tatu: as per [JACKSON-456], it's not safe to just force root
-             * type since it prevents polymorphic type serialization. Since we really
-             * just need this for generics, let's only use generic type if it's truly
-             * generic.
-             */
-            if (genericType.getClass() != Class.class) {
-                rootType = defaultWriter.getTypeFactory().constructType(genericType);
-                /*
-                 * 26-Feb-2011, tatu: To help with [JACKSON-518], we better recognize cases where
-                 * type degenerates back into "Object.class" (as is the case with plain TypeVariable,
-                 * for example), and not use that.
-                 */
-                if (rootType.getRawClass() == Object.class) {
-                    rootType = null;
-                }
-            }
-        }
-
-        return rootType;
-    }
-
     private static class RolesAllowedHolder {
 
         private static final ArcContainer ARC_CONTAINER = Arc.container();
@@ -260,188 +93,6 @@ public class JacksonMapperUtil {
             InstanceHandle<RolesAllowedConfigExpStorage> rolesAllowedConfigExpStorage = ARC_CONTAINER
                     .instance(RolesAllowedConfigExpStorage.class);
             return rolesAllowedConfigExpStorage.isAvailable() ? rolesAllowedConfigExpStorage.get() : null;
-        }
-    }
-
-    public static JavaType[] getGenericsJavaTypes(DeserializationContext context, BeanProperty property) {
-        JavaType wrapperType = property != null ? property.getType() : context.getContextualType();
-        JavaType[] valueTypes = new JavaType[wrapperType.containedTypeCount()];
-        for (int i = 0; i < valueTypes.length; i++) {
-            valueTypes[i] = wrapperType.containedType(i);
-        }
-        return valueTypes;
-    }
-
-    public static void serializePojo(Object value, JsonGenerator generator, SerializerProvider serializerProvider)
-            throws IOException {
-        serializePojo(value, null, generator, serializerProvider);
-    }
-
-    public static void serializePojo(Object value, Object bean, JsonGenerator generator,
-            SerializerProvider serializerProvider) throws IOException {
-        if (value == null || value instanceof Map) {
-            generator.writePOJO(value);
-            return;
-        }
-        if (value == bean && handleSelfReference(bean, generator, serializerProvider)) {
-            return;
-        }
-        JsonSerializer<Object> serializer = serializerProvider.findTypedValueSerializer(value.getClass(), true, null);
-        if (serializer != null) {
-            serializer.serialize(value, generator, serializerProvider);
-        } else {
-            generator.writePOJO(value);
-        }
-    }
-
-    private static boolean handleSelfReference(Object bean, JsonGenerator generator,
-            SerializerProvider serializerProvider) throws IOException {
-        if (!serializerProvider.isEnabled(SerializationFeature.FAIL_ON_SELF_REFERENCES)) {
-            return false;
-        }
-        if (serializerProvider.isEnabled(SerializationFeature.WRITE_SELF_REFERENCES_AS_NULL)) {
-            generator.writeNull();
-            return true;
-        }
-        throw JsonMappingException.from(generator,
-                "Direct self-reference leading to cycle (through reference chain: " + bean.getClass().getName() + ")");
-    }
-
-    @SuppressWarnings("unchecked")
-    public static void serializeCollection(Object value, Class<?> collectionClass, Class<?> elementClass,
-            JsonGenerator generator, SerializerProvider serializerProvider) throws IOException {
-        if (value == null) {
-            generator.writeNull();
-            return;
-        }
-        JavaType collectionType = serializerProvider.getTypeFactory()
-                .constructCollectionType((Class<? extends Collection>) collectionClass, elementClass);
-        JsonSerializer<Object> serializer = serializerProvider.findValueSerializer(collectionType);
-        serializer.serialize(value, generator, serializerProvider);
-    }
-
-    public static void serializeUnwrapped(Object value, JsonGenerator generator,
-            SerializerProvider serializerProvider, Set<String> ignoredProperties,
-            String prefix, String suffix) throws IOException {
-        if (value == null) {
-            return;
-        }
-        if (!ignoredProperties.isEmpty()) {
-            generator = new FilteringGeneratorDelegate(generator, new TokenFilter() {
-                @Override
-                public TokenFilter includeProperty(String name) {
-                    return ignoredProperties.contains(name) ? null : TokenFilter.INCLUDE_ALL;
-                }
-            }, TokenFilter.Inclusion.INCLUDE_ALL_AND_PATH, true);
-        }
-        boolean hasTransform = !prefix.isEmpty() || !suffix.isEmpty();
-        if (hasTransform) {
-            generator = new PrefixSuffixGeneratorDelegate(generator, prefix, suffix);
-        }
-        JsonSerializer<Object> serializer = serializerProvider.findValueSerializer(value.getClass());
-        if (serializer instanceof GeneratedSerializer gs) {
-            gs.serializeContent(value, generator, serializerProvider);
-        } else {
-            NameTransformer transformer = hasTransform
-                    ? NameTransformer.simpleTransformer(prefix, suffix)
-                    : NameTransformer.NOP;
-            serializer.unwrappingSerializer(transformer)
-                    .serialize(value, generator, serializerProvider);
-        }
-    }
-
-    public static void collectUnwrappedFields(JsonNode root, String fieldName, String prefix, String suffix) {
-        if (!(root instanceof ObjectNode objectNode)) {
-            return;
-        }
-        ObjectNode inner = objectNode.objectNode();
-        List<String> toRemove = new ArrayList<>();
-        Iterator<String> names = objectNode.fieldNames();
-        while (names.hasNext()) {
-            String name = names.next();
-            if (name.startsWith(prefix) && name.endsWith(suffix)) {
-                String stripped = name.substring(prefix.length(), name.length() - suffix.length());
-                if (!stripped.isEmpty()) {
-                    inner.set(stripped, objectNode.get(name));
-                    toRemove.add(name);
-                }
-            }
-        }
-        if (!inner.isEmpty()) {
-            toRemove.forEach(objectNode::remove);
-            objectNode.set(fieldName, inner);
-        }
-    }
-
-    public static void serializeAnyGetterMap(Map<?, ?> map, JsonGenerator generator,
-            SerializerProvider serializerProvider) throws IOException {
-        if (map == null) {
-            return;
-        }
-        for (Map.Entry<?, ?> entry : map.entrySet()) {
-            generator.writeFieldName(String.valueOf(entry.getKey()));
-            Object value = entry.getValue();
-            if (value == null) {
-                generator.writeNull();
-            } else {
-                serializePojo(value, null, generator, serializerProvider);
-            }
-        }
-    }
-
-    public enum SerializationInclude {
-
-        ALWAYS,
-        NON_NULL,
-        NON_ABSENT,
-        NON_EMPTY;
-
-        public static SerializationInclude decode(Object object, SerializerProvider serializerProvider) {
-            JsonInclude.Include include = serializerProvider.getDefaultPropertyInclusion(object.getClass()).getValueInclusion();
-            return switch (include) {
-                case NON_EMPTY -> NON_EMPTY;
-                case NON_NULL -> NON_NULL;
-                case NON_ABSENT -> NON_ABSENT;
-                default -> ALWAYS;
-            };
-        }
-
-        public boolean shouldSerialize(Object value) {
-            return switch (this) {
-                case ALWAYS -> true;
-                case NON_NULL -> value != null;
-                case NON_ABSENT -> isPresent(value);
-                case NON_EMPTY -> hasValue(value);
-            };
-        }
-
-        private boolean isPresent(Object value) {
-            if (value == null) {
-                return false;
-            }
-            if (value instanceof Optional o) {
-                return o.isPresent();
-            }
-            return true;
-        }
-
-        private boolean hasValue(Object value) {
-            if (!isPresent(value)) {
-                return false;
-            }
-            if (value instanceof String s) {
-                return !s.isEmpty();
-            }
-            if (value instanceof Collection c) {
-                return !c.isEmpty();
-            }
-            if (value instanceof Map m) {
-                return !m.isEmpty();
-            }
-            if (value.getClass().isArray()) {
-                return Array.getLength(value) > 0;
-            }
-            return true;
         }
     }
 }

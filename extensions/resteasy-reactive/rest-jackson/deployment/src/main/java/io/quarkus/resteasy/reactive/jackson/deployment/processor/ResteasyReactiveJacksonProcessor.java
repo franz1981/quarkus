@@ -82,7 +82,7 @@ import io.quarkus.resteasy.reactive.jackson.runtime.security.SecurityCustomSeria
 import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.BasicServerJacksonMessageBodyWriter;
 import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.FullyFeaturedServerJacksonMessageBodyReader;
 import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.FullyFeaturedServerJacksonMessageBodyWriter;
-import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.GeneratedSerializersRegister;
+import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.GeneratedPropertyAccessorRegister;
 import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.ServerJacksonMessageBodyReader;
 import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.vertx.VertxJsonArrayMessageBodyReader;
 import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.vertx.VertxJsonArrayMessageBodyWriter;
@@ -401,7 +401,8 @@ public class ResteasyReactiveJacksonProcessor {
             JaxRsResourceIndexBuildItem jaxRsIndex, CombinedIndexBuildItem index,
             List<ResponseTypeUnwrapperBuildItem> responseTypeUnwrappers,
             ResteasyReactiveServerJacksonRecorder recorder,
-            BuildProducer<GeneratedClassBuildItem> generatedClassBuildItemBuildProducer) {
+            BuildProducer<GeneratedClassBuildItem> generatedClassBuildItemBuildProducer,
+            BuildProducer<ReflectiveClassBuildItem> reflectiveClassBuildItemBuildProducer) {
 
         IndexView indexView = jaxRsIndex.getIndexView();
         Set<DotName> additionalUnwrapTypes = new HashSet<>();
@@ -431,24 +432,30 @@ public class ResteasyReactiveJacksonProcessor {
             }
         }
 
-        if (!serializedClasses.isEmpty()) {
-            JacksonSerializerFactory factory = new JacksonSerializerFactory(generatedClassBuildItemBuildProducer,
-                    index.getComputingIndex());
-            factory.create(serializedClasses.values())
-                    .forEach(recorder::recordGeneratedSerializer);
+        // one accessor serves both directions: Jackson's BeanSerializer/BeanDeserializer keep driving the codecs and
+        // the generated accessor replaces their reflective property access
+        Map<String, ClassInfo> accessedClasses = new HashMap<>(serializedClasses);
+        accessedClasses.putAll(deserializedClasses);
+        if (!accessedClasses.isEmpty()) {
+            JacksonPropertyAccessorFactory factory = new JacksonPropertyAccessorFactory(
+                    generatedClassBuildItemBuildProducer, index.getComputingIndex());
+            Collection<String> created = factory.create(accessedClasses.values());
+            if (!created.isEmpty()) {
+                // the generated classes are instantiated per ObjectMapper at runtime, so their constructor must be
+                // reachable in native mode
+                reflectiveClassBuildItemBuildProducer.produce(ReflectiveClassBuildItem.builder(created.toArray(new String[0]))
+                        .reason(getClass().getName()).constructors().build());
+                recorder.recordGeneratedPropertyAccessor(created.iterator().next(), factory.beanClassNames());
+            }
         }
 
-        if (!deserializedClasses.isEmpty()) {
-            JacksonDeserializerFactory factory = new JacksonDeserializerFactory(generatedClassBuildItemBuildProducer,
-                    index.getComputingIndex());
-            factory.create(deserializedClasses.values())
-                    .forEach(recorder::recordGeneratedDeserializer);
-        }
+        // no deserializer class is generated any more: Jackson's BeanDeserializer is used, with the generated accessor
+        // providing the property mutation (GeneratedPropertyMutatorModifier) and pre-encoded ordered name matching
     }
 
     @BuildStep(onlyIf = JacksonOptimizationConfig.IsReflectionFreeSerializersEnabled.class)
     void unremovable(BuildProducer<AdditionalBeanBuildItem> additionalProducer) {
-        additionalProducer.produce(AdditionalBeanBuildItem.unremovableOf(GeneratedSerializersRegister.class));
+        additionalProducer.produce(AdditionalBeanBuildItem.unremovableOf(GeneratedPropertyAccessorRegister.class));
     }
 
     @BuildStep
