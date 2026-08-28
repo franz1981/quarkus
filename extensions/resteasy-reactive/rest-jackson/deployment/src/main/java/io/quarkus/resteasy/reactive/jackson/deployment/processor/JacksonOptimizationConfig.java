@@ -15,7 +15,8 @@ import io.smallrye.config.WithDefault;
 public interface JacksonOptimizationConfig {
 
     /**
-     * Enable build time generation of reflection-free Jackson serializers.
+     * Enable build time generation of a reflection-free property accessor, used by Jackson to read and write
+     * the properties of the classes serialized and deserialized by REST endpoints.
      */
     @WithDefault("true")
     boolean enableReflectionFreeSerializers();
