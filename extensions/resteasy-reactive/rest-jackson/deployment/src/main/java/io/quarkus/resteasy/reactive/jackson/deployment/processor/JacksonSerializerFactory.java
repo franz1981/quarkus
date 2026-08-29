@@ -1,6 +1,7 @@
 package io.quarkus.resteasy.reactive.jackson.deployment.processor;
 
 import static org.objectweb.asm.Opcodes.ACC_FINAL;
+import static org.objectweb.asm.Opcodes.ACC_PRIVATE;
 import static org.objectweb.asm.Opcodes.ACC_PUBLIC;
 import static org.objectweb.asm.Opcodes.ACC_STATIC;
 
@@ -11,6 +12,7 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -32,13 +34,17 @@ import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.SerializableString;
 import com.fasterxml.jackson.core.io.SerializedString;
 import com.fasterxml.jackson.core.type.WritableTypeId;
+import com.fasterxml.jackson.databind.BeanProperty;
 import com.fasterxml.jackson.databind.JavaType;
+import com.fasterxml.jackson.databind.JsonMappingException;
+import com.fasterxml.jackson.databind.JsonSerializer;
 import com.fasterxml.jackson.databind.PropertyNamingStrategy;
 import com.fasterxml.jackson.databind.SerializationConfig;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.SerializerProvider;
 import com.fasterxml.jackson.databind.exc.InvalidDefinitionException;
 import com.fasterxml.jackson.databind.jsontype.TypeSerializer;
+import com.fasterxml.jackson.databind.ser.ResolvableSerializer;
 import com.fasterxml.jackson.databind.type.SimpleType;
 
 import io.quarkus.deployment.GeneratedClassGizmoAdaptor;
@@ -235,6 +241,11 @@ public class JacksonSerializerFactory extends JacksonCodeGenerator {
     }
 
     @Override
+    protected String[] getInterfacesNames(ClassInfo classInfo) {
+        return new String[] { ResolvableSerializer.class.getName() };
+    }
+
+    @Override
     protected boolean createSerializationMethod(ClassInfo classInfo, ClassCreator classCreator, String beanClassName) {
         var jsonValueFieldSpecs = jsonValueFieldSpecs(classInfo);
         if (jsonValueFieldSpecs == null) {
@@ -243,6 +254,7 @@ public class JacksonSerializerFactory extends JacksonCodeGenerator {
 
         boolean isJsonValue = jsonValueFieldSpecs.isPresent();
         boolean isArrayShape = !isJsonValue && isClassFormatShapeArray(classInfo);
+        Map<String, FieldDescriptor> nestedSerializers = new LinkedHashMap<>();
 
         // Generate serializeContent() — writes field content without object boundaries
         MethodCreator contentMethod = classCreator.getMethodCreator("serializeContent", void.class,
@@ -251,11 +263,11 @@ public class JacksonSerializerFactory extends JacksonCodeGenerator {
                 .addException(IOException.class);
 
         if (isJsonValue) {
-            SerializationContext ctx = new SerializationContext(contentMethod, beanClassName);
+            SerializationContext ctx = new SerializationContext(contentMethod, beanClassName, classCreator, nestedSerializers);
             serializeJsonValue(ctx, contentMethod, jsonValueFieldSpecs.get());
         } else {
             Set<String> serializedFields = new HashSet<>();
-            SerializationContext ctx = new SerializationContext(contentMethod, beanClassName);
+            SerializationContext ctx = new SerializationContext(contentMethod, beanClassName, classCreator, nestedSerializers);
             if (isArrayShape) {
                 serializeObjectData(classInfo, classCreator, contentMethod, ctx, serializedFields, null);
             } else {
@@ -267,6 +279,7 @@ public class JacksonSerializerFactory extends JacksonCodeGenerator {
             classCreator.getMethodCreator("<clinit>", void.class).setModifiers(ACC_STATIC).returnVoid();
         }
         contentMethod.returnVoid();
+        createResolveMethod(classCreator, nestedSerializers);
 
         if (isJsonValue || isArrayShape) {
             MethodCreator serialize = classCreator.getMethodCreator("serialize", void.class,
@@ -295,6 +308,25 @@ public class JacksonSerializerFactory extends JacksonCodeGenerator {
         }
 
         return true;
+    }
+
+    /**
+     * {@code ResolvableSerializer#resolve}: looks up the serializers of the nested bean types once, when Jackson caches
+     * this serializer, instead of on every value through {@code SerializerProvider#findTypedValueSerializer}.
+     */
+    private static void createResolveMethod(ClassCreator classCreator, Map<String, FieldDescriptor> nestedSerializers) {
+        try (MethodCreator resolve = classCreator.getMethodCreator("resolve", void.class, SerializerProvider.class)
+                .setModifiers(ACC_PUBLIC).addException(JsonMappingException.class)) {
+            ResultHandle provider = resolve.getMethodParam(0);
+            for (Map.Entry<String, FieldDescriptor> nested : nestedSerializers.entrySet()) {
+                ResultHandle serializer = resolve.invokeVirtualMethod(
+                        MethodDescriptor.ofMethod(SerializerProvider.class, "findTypedValueSerializer", JsonSerializer.class,
+                                Class.class, boolean.class, BeanProperty.class),
+                        provider, resolve.loadClass(nested.getKey()), resolve.load(true), resolve.loadNull());
+                resolve.writeInstanceField(nested.getValue(), resolve.getThis(), serializer);
+            }
+            resolve.returnVoid();
+        }
     }
 
     private static void generateSerializeWithTypeForArrayShape(ClassCreator classCreator) {
@@ -482,7 +514,7 @@ public class JacksonSerializerFactory extends JacksonCodeGenerator {
         }
     }
 
-    private List<FieldSpecs> collectAllFieldSpecs(ClassInfo classInfo, PropertyNamingStrategy namingStrategy) {
+    protected List<FieldSpecs> collectAllFieldSpecs(ClassInfo classInfo, PropertyNamingStrategy namingStrategy) {
         List<FieldSpecs> allSpecs = new ArrayList<>();
         MethodInfo constructor = findConstructor(classInfo).orElse(null);
         Set<MethodInfo> boundMethods = new HashSet<>();
@@ -802,8 +834,29 @@ public class JacksonSerializerFactory extends JacksonCodeGenerator {
                 MethodDescriptor serializePojoMethod = MethodDescriptor.ofMethod(JacksonMapperUtil.class.getName(),
                         "serializePojo",
                         void.class, Object.class, Object.class, JsonGenerator.class, SerializerProvider.class);
-                bytecode.invokeStaticMethod(serializePojoMethod, arg, ctx.valueHandle, ctx.jsonGenerator,
-                        ctx.serializerProvider);
+                if (fieldKind == FieldKind.OBJECT) {
+                    // nested bean: values of exactly the declared type use the serializer resolved once in resolve();
+                    // subtypes, nulls and self-references keep going through the dynamic lookup in serializePojo
+                    FieldDescriptor serializerField = ctx.nestedSerializers.computeIfAbsent(typeName,
+                            name -> ctx.classCreator.getFieldCreator("serializer$" + ctx.nestedSerializers.size(),
+                                    JsonSerializer.class).setModifiers(ACC_PRIVATE).getFieldDescriptor());
+                    ResultHandle useResolved = bytecode.invokeStaticMethod(
+                            MethodDescriptor.ofMethod(JacksonMapperUtil.class, "useResolvedSerializer", boolean.class,
+                                    Object.class, Object.class, Class.class),
+                            arg, ctx.valueHandle, bytecode.loadClass(typeName));
+                    BranchResult resolvedBranch = bytecode.ifTrue(useResolved);
+                    BytecodeCreator resolved = resolvedBranch.trueBranch();
+                    resolved.invokeVirtualMethod(
+                            MethodDescriptor.ofMethod(JsonSerializer.class, "serialize", void.class, Object.class,
+                                    JsonGenerator.class, SerializerProvider.class),
+                            resolved.readInstanceField(serializerField, resolved.getThis()), arg, ctx.jsonGenerator,
+                            ctx.serializerProvider);
+                    resolvedBranch.falseBranch().invokeStaticMethod(serializePojoMethod, arg, ctx.valueHandle,
+                            ctx.jsonGenerator, ctx.serializerProvider);
+                } else {
+                    bytecode.invokeStaticMethod(serializePojoMethod, arg, ctx.valueHandle, ctx.jsonGenerator,
+                            ctx.serializerProvider);
+                }
             }
         }
     }
@@ -979,10 +1032,13 @@ public class JacksonSerializerFactory extends JacksonCodeGenerator {
     }
 
     private record SerializationContext(ResultHandle valueHandle, ResultHandle jsonGenerator, ResultHandle serializerProvider,
-            ResultHandle includeHandle, ResultHandle strategyHandle, ResultHandle activeViewHandle) {
-        SerializationContext(MethodCreator serialize, String beanClassName) {
+            ResultHandle includeHandle, ResultHandle strategyHandle, ResultHandle activeViewHandle,
+            ClassCreator classCreator, Map<String, FieldDescriptor> nestedSerializers) {
+        SerializationContext(MethodCreator serialize, String beanClassName, ClassCreator classCreator,
+                Map<String, FieldDescriptor> nestedSerializers) {
             this(valueHandle(serialize, beanClassName), serialize.getMethodParam(1), serialize.getMethodParam(2),
-                    includeHandle(serialize), strategyHandle(serialize), activeViewHandle(serialize));
+                    includeHandle(serialize), strategyHandle(serialize), activeViewHandle(serialize), classCreator,
+                    nestedSerializers);
         }
 
         private static ResultHandle valueHandle(MethodCreator serialize, String beanClassName) {

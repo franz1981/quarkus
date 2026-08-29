@@ -16,6 +16,7 @@ import com.fasterxml.jackson.databind.ser.std.StdSerializer;
 
 import io.quarkus.arc.Arc;
 import io.quarkus.resteasy.reactive.jackson.runtime.security.RolesAllowedConfigExpStorage;
+import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.GeneratedPropertyAccessor;
 import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.GeneratedSerializersRegister;
 import io.quarkus.runtime.RuntimeValue;
 import io.quarkus.runtime.ShutdownContext;
@@ -83,6 +84,11 @@ public class ResteasyReactiveServerJacksonRecorder {
 
     public void recordGeneratedSerializer(String className) {
         GeneratedSerializersRegister.addSerializer((Class<? extends StdSerializer>) loadClass(className));
+    }
+
+    public void recordGeneratedPropertyAccessor(String className) {
+        GeneratedSerializersRegister
+                .addPropertyAccessor((Class<? extends GeneratedPropertyAccessor>) loadClass(className));
     }
 
     public void recordGeneratedDeserializer(String className) {

@@ -2,6 +2,7 @@ package io.quarkus.resteasy.reactive.jackson.deployment.processor;
 
 import static io.quarkus.gizmo.MethodDescriptor.ofMethod;
 import static org.objectweb.asm.Opcodes.ACC_FINAL;
+import static org.objectweb.asm.Opcodes.ACC_PRIVATE;
 import static org.objectweb.asm.Opcodes.ACC_PUBLIC;
 import static org.objectweb.asm.Opcodes.ACC_STATIC;
 
@@ -14,6 +15,7 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
@@ -33,6 +35,7 @@ import com.fasterxml.jackson.annotation.JsonAnySetter;
 import com.fasterxml.jackson.annotation.JsonSetter;
 import com.fasterxml.jackson.core.JacksonException;
 import com.fasterxml.jackson.core.JsonParser;
+import com.fasterxml.jackson.core.JsonToken;
 import com.fasterxml.jackson.core.ObjectCodec;
 import com.fasterxml.jackson.core.TreeNode;
 import com.fasterxml.jackson.databind.BeanProperty;
@@ -46,6 +49,7 @@ import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.PropertyNamingStrategy;
 import com.fasterxml.jackson.databind.cfg.MapperConfig;
 import com.fasterxml.jackson.databind.deser.ContextualDeserializer;
+import com.fasterxml.jackson.databind.deser.ResolvableDeserializer;
 import com.fasterxml.jackson.databind.deser.std.StdDeserializer;
 import com.fasterxml.jackson.databind.exc.MismatchedInputException;
 import com.fasterxml.jackson.databind.exc.UnrecognizedPropertyException;
@@ -240,11 +244,15 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
     }
 
     protected String[] getInterfacesNames(ClassInfo classInfo) {
-        return classInfo.typeParameters().isEmpty() ? new String[0] : new String[] { ContextualDeserializer.class.getName() };
+        // generic classes get a fresh instance per context (createContextual), so they cannot hold resolved codecs
+        return classInfo.typeParameters().isEmpty()
+                ? new String[] { ResolvableDeserializer.class.getName() }
+                : new String[] { ContextualDeserializer.class.getName() };
     }
 
     @Override
     protected boolean createSerializationMethod(ClassInfo classInfo, ClassCreator classCreator, String beanClassName) {
+        createIsCachableMethod(classCreator);
         MethodCreator deserialize = classCreator
                 .getMethodCreator("deserialize", Object.class, JsonParser.class, DeserializationContext.class)
                 .setModifiers(ACC_PUBLIC)
@@ -268,9 +276,14 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
         ResultHandle activeViewHandle = deserialize.invokeVirtualMethod(
                 ofMethod(DeserializationContext.class, "getActiveView", Class.class),
                 deserialize.getMethodParam(1));
+        // Beans with a no-args constructor are read directly from the token stream; the JsonNode tree is only
+        // materialized when random access to the JSON is needed (creator parameters, array shape, @JsonUnwrapped)
+        boolean streaming = ctor.parametersCount() == 0 && !isClassFormatShapeArray(classInfo)
+                && !hasUnwrappedFields(classInfo, ctor, namingStrategy);
+        Map<String, FieldDescriptor> nestedDeserializers = classInfo.typeParameters().isEmpty() ? new LinkedHashMap<>() : null;
         DeserializationData deserData = new DeserializationData(classInfo, ctor, classCreator, deserialize,
-                getJsonNode(deserialize), parseTypeParameters(classInfo, classCreator), new HashSet<>(),
-                namingStrategy, strategyHandle, reverseIndexHandle, activeViewHandle);
+                streaming ? null : getJsonNode(deserialize), parseTypeParameters(classInfo, classCreator), new HashSet<>(),
+                namingStrategy, strategyHandle, reverseIndexHandle, activeViewHandle, streaming, nestedDeserializers);
 
         ResultHandle deserializedHandle = ctor.parametersCount() == 0
                 ? deserData.methodCreator.newInstance(MethodDescriptor.ofConstructor(deserData.classInfo.name().toString()))
@@ -283,11 +296,38 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
         boolean valid;
         if (isClassFormatShapeArray(classInfo)) {
             valid = deserializeArrayFields(deserData, deserializedHandle);
+        } else if (streaming) {
+            valid = deserializeObjectFieldsStreaming(deserData, deserializedHandle);
         } else {
             valid = deserializeObjectFields(deserData, deserializedHandle);
         }
         deserialize.returnValue(deserializedHandle);
+        if (nestedDeserializers != null) {
+            createResolveMethod(classCreator, nestedDeserializers);
+        }
         return valid;
+    }
+
+    /**
+     * {@code ResolvableDeserializer#resolve}: looks up the deserializers of the nested bean types once, when Jackson
+     * caches this deserializer, instead of on every value through {@code DeserializationContext#readValue}.
+     */
+    private static void createResolveMethod(ClassCreator classCreator, Map<String, FieldDescriptor> nestedDeserializers) {
+        try (MethodCreator resolve = classCreator.getMethodCreator("resolve", void.class, DeserializationContext.class)
+                .setModifiers(ACC_PUBLIC).addException(JsonMappingException.class)) {
+            ResultHandle ctxt = resolve.getMethodParam(0);
+            for (Map.Entry<String, FieldDescriptor> nested : nestedDeserializers.entrySet()) {
+                ResultHandle javaType = resolve.invokeVirtualMethod(
+                        ofMethod(DeserializationContext.class, "constructType", JavaType.class, Class.class),
+                        ctxt, resolve.loadClass(nested.getKey()));
+                ResultHandle deserializer = resolve.invokeVirtualMethod(
+                        ofMethod(DeserializationContext.class, "findRootValueDeserializer", JsonDeserializer.class,
+                                JavaType.class),
+                        ctxt, javaType);
+                resolve.writeInstanceField(nested.getValue(), resolve.getThis(), deserializer);
+            }
+            resolve.returnVoid();
+        }
     }
 
     private static ResultHandle getStrategyHandle(MethodCreator deserialize) {
@@ -336,7 +376,8 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
             }
 
             ResultHandle paramValue = readValueFromJson(deserData.classCreator, deserData.methodCreator,
-                    deserData.methodCreator.getMethodParam(1), fieldSpecs, deserData.typeParametersIndex, fieldValue);
+                    deserData.methodCreator.getMethodParam(1), fieldSpecs, deserData.typeParametersIndex, fieldValue, false,
+                    null);
             if (paramValue == null) {
                 // the value of this parameter cannot be deserialized in a reflection-free way (e.g. its
                 // type is polymorphic), so give up generating the deserializer for the whole class
@@ -444,6 +485,150 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
         handleUnknownFields(deserData, ignoredProperties, ctorFields, strSwitch, deserializationContext, fieldName,
                 fieldValue, objHandle, anySetterMethod, anySetterField);
         return result;
+    }
+
+    /**
+     * Streaming counterpart of {@link #deserializeObjectFields}: iterates the parser tokens instead of a materialized
+     * {@code JsonNode} tree. Scalars are read straight from the parser, nested values through
+     * {@code DeserializationContext#readValue(JsonParser, ...)}, unknown and ignored properties are skipped with
+     * {@code JsonParser#skipChildren()}.
+     */
+    private boolean deserializeObjectFieldsStreaming(DeserializationData deserData, ResultHandle objHandle) {
+        MethodCreator deserialize = deserData.methodCreator;
+        ResultHandle parser = deserialize.getMethodParam(0);
+        ResultHandle deserializationContext = deserialize.getMethodParam(1);
+
+        // the current token is START_OBJECT (root or nested value) or FIELD_NAME (object already opened by the caller)
+        AssignableResultHandle jsonName = deserialize.createVariable(String.class);
+        BranchResult atStartObject = deserialize.ifTrue(deserialize.invokeVirtualMethod(
+                ofMethod(JsonParser.class, "isExpectedStartObjectToken", boolean.class), parser));
+        atStartObject.trueBranch().assign(jsonName, atStartObject.trueBranch().invokeVirtualMethod(
+                ofMethod(JsonParser.class, "nextFieldName", String.class), parser));
+        BytecodeCreator notAtStartObject = atStartObject.falseBranch();
+        BranchResult atFieldName = notAtStartObject.ifTrue(notAtStartObject.invokeVirtualMethod(
+                ofMethod(JsonParser.class, "hasToken", boolean.class, JsonToken.class), parser,
+                notAtStartObject.readStaticField(FieldDescriptor.of(JsonToken.class, "FIELD_NAME", JsonToken.class))));
+        atFieldName.trueBranch().assign(jsonName, atFieldName.trueBranch().invokeVirtualMethod(
+                ofMethod(JsonParser.class, "currentName", String.class), parser));
+        BytecodeCreator unexpectedToken = atFieldName.falseBranch();
+        unexpectedToken.returnValue(unexpectedToken.invokeVirtualMethod(
+                ofMethod(DeserializationContext.class, "handleUnexpectedToken", Object.class, Class.class, JsonParser.class),
+                deserializationContext, unexpectedToken.loadClass(deserData.classInfo.name().toString()), parser));
+
+        Set<String> ignoredProperties = new HashSet<>(getIgnoredProperties(deserData.classInfo));
+        MethodInfo anyGetterMethod = findAnyGetterMethod(deserData.classInfo);
+        if (anyGetterMethod != null) {
+            ignoredProperties.add(anyGetterBackingFieldName(anyGetterMethod));
+        } else {
+            FieldInfo anyGetterField = findAnyGetterField(deserData.classInfo);
+            if (anyGetterField != null) {
+                ignoredProperties.add(anyGetterField.name());
+            }
+        }
+        deserData.constructorFields.addAll(ignoredProperties);
+
+        BytecodeCreator loop = deserialize.whileLoop(c -> c.ifNotNull(jsonName)).block();
+        // move from the field name to its value
+        loop.invokeVirtualMethod(ofMethod(JsonParser.class, "nextToken", JsonToken.class), parser);
+        ResultHandle fieldName = translateStreamedFieldName(deserData, loop, jsonName);
+        Switch.StringSwitch strSwitch = loop.stringSwitch(fieldName);
+
+        boolean result = deserializeFields(deserData, deserializationContext, objHandle, parser,
+                deserData.constructorFields, strSwitch);
+
+        MethodInfo anySetterMethod = findAnySetterMethod(deserData.classInfo);
+        FieldInfo anySetterField = anySetterMethod == null ? findAnySetterField(deserData.classInfo) : null;
+        handleUnknownStreamedFields(deserData, ignoredProperties, strSwitch, deserializationContext, parser, fieldName,
+                objHandle, anySetterMethod, anySetterField);
+
+        loop.assign(jsonName, loop.invokeVirtualMethod(ofMethod(JsonParser.class, "nextFieldName", String.class), parser));
+        return result;
+    }
+
+    private void handleUnknownStreamedFields(DeserializationData deserData, Set<String> ignoredProperties,
+            Switch.StringSwitch strSwitch, ResultHandle deserializationContext, ResultHandle parser,
+            ResultHandle fieldName, ResultHandle objHandle, MethodInfo anySetterMethod, FieldInfo anySetterField) {
+        MethodDescriptor skipChildren = ofMethod(JsonParser.class, "skipChildren", JsonParser.class);
+        for (String ignoredProp : ignoredProperties) {
+            strSwitch.caseOf(ignoredProp, bytecode -> bytecode.invokeVirtualMethod(skipChildren, parser));
+        }
+
+        if (anySetterMethod != null) {
+            strSwitch.defaultCase(bytecode -> {
+                ResultHandle deserializedValue = bytecode.invokeVirtualMethod(
+                        ofMethod(DeserializationContext.class, "readValue", Object.class, JsonParser.class, Class.class),
+                        deserializationContext, parser,
+                        bytecode.loadClass(anySetterMethod.parameterType(1).name().toString()));
+                ResultHandle castedFieldName = bytecode.checkCast(fieldName, String.class);
+                if (anySetterMethod.declaringClass().isInterface()) {
+                    bytecode.invokeInterfaceMethod(anySetterMethod, objHandle, castedFieldName, deserializedValue);
+                } else {
+                    bytecode.invokeVirtualMethod(anySetterMethod, objHandle, castedFieldName, deserializedValue);
+                }
+            });
+        } else if (anySetterField != null) {
+            ClassInfo classInfo = deserData.classInfo;
+            strSwitch.defaultCase(bytecode -> {
+                ResultHandle deserializedValue = bytecode.invokeVirtualMethod(
+                        ofMethod(DeserializationContext.class, "readValue", Object.class, JsonParser.class, Class.class),
+                        deserializationContext, parser, bytecode.loadClass(Object.class));
+                ResultHandle castedFieldName = bytecode.checkCast(fieldName, String.class);
+                MethodInfo getter = findMethod(classInfo, "get" + ucFirst(anySetterField.name()));
+                ResultHandle map;
+                if (getter != null) {
+                    map = bytecode.invokeVirtualMethod(MethodDescriptor.of(getter), objHandle);
+                } else {
+                    map = bytecode.readInstanceField(FieldDescriptor.of(anySetterField), objHandle);
+                }
+                bytecode.invokeInterfaceMethod(
+                        ofMethod(Map.class, "put", Object.class, Object.class, Object.class),
+                        map, castedFieldName, deserializedValue);
+            });
+        } else if (shouldIgnoreUnknownProperties(deserData.classInfo)) {
+            strSwitch.defaultCase(bytecode -> bytecode.invokeVirtualMethod(skipChildren, parser));
+        } else {
+            strSwitch.defaultCase(bytecode -> {
+                ResultHandle failOnUnknown = bytecode.invokeVirtualMethod(
+                        ofMethod(DeserializationContext.class, "isEnabled", boolean.class, DeserializationFeature.class),
+                        deserializationContext,
+                        bytecode.readStaticField(FieldDescriptor.of(DeserializationFeature.class,
+                                "FAIL_ON_UNKNOWN_PROPERTIES", DeserializationFeature.class)));
+                BranchResult failBranch = bytecode.ifTrue(failOnUnknown);
+                BytecodeCreator trueBranch = failBranch.trueBranch();
+                ResultHandle targetClass = trueBranch.loadClass(deserData.classInfo.name().toString());
+                ResultHandle castedFieldName = trueBranch.checkCast(fieldName, String.class);
+                ResultHandle exception = trueBranch.invokeStaticMethod(
+                        ofMethod(UnrecognizedPropertyException.class, "from", UnrecognizedPropertyException.class,
+                                JsonParser.class, Object.class, String.class, Collection.class),
+                        parser, targetClass, castedFieldName, trueBranch.loadNull());
+                trueBranch.throwException(exception);
+                failBranch.falseBranch().invokeVirtualMethod(skipChildren, parser);
+            });
+        }
+    }
+
+    private static ResultHandle translateStreamedFieldName(DeserializationData deserData, BytecodeCreator bytecode,
+            ResultHandle jsonName) {
+        if (deserData.reverseIndexHandle == null) {
+            return jsonName;
+        }
+        AssignableResultHandle resolved = bytecode.createVariable(Object.class);
+        bytecode.assign(resolved, jsonName);
+        BytecodeCreator hasIndex = bytecode.ifNotNull(deserData.reverseIndexHandle).trueBranch();
+        hasIndex.assign(resolved, hasIndex.invokeInterfaceMethod(
+                ofMethod(Map.class, "getOrDefault", Object.class, Object.class, Object.class),
+                deserData.reverseIndexHandle, jsonName, jsonName));
+        return resolved;
+    }
+
+    private boolean hasUnwrappedFields(ClassInfo classInfo, MethodInfo constructor, PropertyNamingStrategy namingStrategy) {
+        for (FieldInfo fieldInfo : classFields(classInfo)) {
+            FieldSpecs fieldSpecs = fieldSpecsFromField(classInfo, constructor, fieldInfo, namingStrategy);
+            if (fieldSpecs != null && fieldSpecs.isUnwrapped()) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean deserializeArrayFields(DeserializationData deserData, ResultHandle objHandle) {
@@ -694,6 +879,22 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
         return typeParametersIndex;
     }
 
+    /**
+     * Jackson only stores a deserializer in {@code DeserializerCache._cachedDeserializers} when
+     * {@code JsonDeserializer#isCachable()} returns {@code true}; the default is {@code false} and
+     * {@code StdDeserializer} does not override it. Without this override every
+     * {@code DeserializationContext#readTreeAsValue(JsonNode, Class)} call made for a nested bean misses the cache,
+     * takes the deserializer-creation lock (contended between event loops) and re-introspects the bean class.
+     * The generated deserializers are stateless (the contextual variant returns a fresh instance from
+     * {@code createContextual}, like {@code BeanDeserializer}), so they are safe to cache.
+     */
+    private static void createIsCachableMethod(ClassCreator classCreator) {
+        try (MethodCreator isCachable = classCreator.getMethodCreator("isCachable", boolean.class)) {
+            isCachable.setModifiers(ACC_PUBLIC);
+            isCachable.returnValue(isCachable.load(true));
+        }
+    }
+
     private static void createContextualMethod(ClassCreator classCreator) {
         FieldDescriptor valueTypesField = FieldDescriptor.of(classCreator.getClassName(), "valueTypes", JavaType[].class);
         classCreator.getFieldCreator(valueTypesField);
@@ -781,7 +982,8 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
         }
 
         ResultHandle valueHandle = readValueFromJson(deserData.classCreator, effectiveBytecode, deserializationContext,
-                fieldSpecs, deserData.typeParametersIndex, fieldValue);
+                fieldSpecs, deserData.typeParametersIndex, fieldValue, deserData.streaming(),
+                deserData.streaming() ? deserData.nestedDeserializers() : null);
         if (valueHandle == null) {
             return false;
         }
@@ -848,13 +1050,20 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
                 && (methodInfo.name().startsWith("set") || methodInfo.hasAnnotation(JsonSetter.class));
     }
 
+    /**
+     * Emits the bytecode reading one field value. In streaming mode {@code valueSource} is the {@code JsonParser}
+     * positioned on the value token, otherwise it is the {@code JsonNode} of the value.
+     */
     private ResultHandle readValueFromJson(ClassCreator classCreator, BytecodeCreator bytecode,
             ResultHandle deserializationContext, FieldSpecs fieldSpecs, Map<String, Integer> typeParametersIndex,
-            ResultHandle valueNode) {
+            ResultHandle valueSource, boolean streaming, Map<String, FieldDescriptor> nestedDeserializers) {
+        ResultHandle valueNode = valueSource;
         Type fieldType = fieldSpecs.fieldType;
         String fieldTypeName = fieldType.name().toString();
         if (JacksonSerializationUtils.isBasicJsonType(fieldType)) {
-            return readValueForPrimitiveFields(bytecode, fieldType, valueNode);
+            return streaming
+                    ? readValueForPrimitiveFieldsFromParser(bytecode, fieldType, valueSource)
+                    : readValueForPrimitiveFields(bytecode, fieldType, valueNode);
         }
 
         if (hasJsonTypeInfoInTypeChain(fieldType)) {
@@ -877,9 +1086,81 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
             return null;
         }
 
+        if (streaming) {
+            if (!fieldKind.isGeneric() && nestedDeserializers != null) {
+                // nested bean: use the deserializer resolved once in resolve(); mirrors DeserializationContext#_readValue
+                FieldDescriptor deserializerField = nestedDeserializers.computeIfAbsent(fieldTypeName,
+                        name -> classCreator
+                                .getFieldCreator("deserializer$" + nestedDeserializers.size(), JsonDeserializer.class)
+                                .setModifiers(ACC_PRIVATE).getFieldDescriptor());
+                ResultHandle deserializer = bytecode.readInstanceField(deserializerField, bytecode.getThis());
+                AssignableResultHandle value = bytecode.createVariable(Object.class);
+                BranchResult isNullToken = bytecode.ifTrue(bytecode.invokeVirtualMethod(
+                        ofMethod(JsonParser.class, "hasToken", boolean.class, JsonToken.class), valueSource,
+                        bytecode.readStaticField(FieldDescriptor.of(JsonToken.class, "VALUE_NULL", JsonToken.class))));
+                isNullToken.trueBranch().assign(value, isNullToken.trueBranch().invokeVirtualMethod(
+                        ofMethod(JsonDeserializer.class, "getNullValue", Object.class, DeserializationContext.class),
+                        deserializer, deserializationContext));
+                isNullToken.falseBranch().assign(value, isNullToken.falseBranch().invokeVirtualMethod(
+                        ofMethod(JsonDeserializer.class, "deserialize", Object.class, JsonParser.class,
+                                DeserializationContext.class),
+                        deserializer, valueSource, deserializationContext));
+                return value;
+            }
+            MethodDescriptor readValue = ofMethod(DeserializationContext.class, "readValue",
+                    Object.class, JsonParser.class, fieldKind.isGeneric() ? JavaType.class : Class.class);
+            return bytecode.invokeVirtualMethod(readValue, deserializationContext, valueSource, typeHandle);
+        }
         MethodDescriptor readTreeAsValue = ofMethod(DeserializationContext.class, "readTreeAsValue",
                 Object.class, JsonNode.class, fieldKind.isGeneric() ? JavaType.class : Class.class);
         return bytecode.invokeVirtualMethod(readTreeAsValue, deserializationContext, valueNode, typeHandle);
+    }
+
+    /**
+     * Streaming counterpart of {@link #readValueForPrimitiveFields}: reads the scalar from the parser (positioned on
+     * the value token). A structured value where a scalar is expected is skipped so the field loop stays in sync.
+     */
+    private static ResultHandle readValueForPrimitiveFieldsFromParser(BytecodeCreator bytecode, Type fieldType,
+            ResultHandle parser) {
+        AssignableResultHandle result = bytecode.createVariable(DescriptorUtils.typeToString(fieldType));
+
+        ResultHandle isNullToken = bytecode.invokeVirtualMethod(
+                ofMethod(JsonParser.class, "hasToken", boolean.class, JsonToken.class), parser,
+                bytecode.readStaticField(FieldDescriptor.of(JsonToken.class, "VALUE_NULL", JsonToken.class)));
+        BranchResult isValueNull = bytecode.ifTrue(isNullToken);
+        BytecodeCreator isValueNullTrue = isValueNull.trueBranch();
+        isValueNullTrue.assign(result, JacksonSerializationUtils.getDefaultValue(isValueNullTrue, fieldType));
+
+        BytecodeCreator isValueNullFalse = isValueNull.falseBranch();
+        MethodDescriptor getValueAsString = ofMethod(JsonParser.class, "getValueAsString", String.class);
+        MethodDescriptor getValueAsInt = ofMethod(JsonParser.class, "getValueAsInt", int.class);
+        MethodDescriptor getValueAsLong = ofMethod(JsonParser.class, "getValueAsLong", long.class);
+        MethodDescriptor getValueAsDouble = ofMethod(JsonParser.class, "getValueAsDouble", double.class);
+        MethodDescriptor getValueAsBoolean = ofMethod(JsonParser.class, "getValueAsBoolean", boolean.class);
+
+        ResultHandle convertedValue = switch (fieldType.name().toString()) {
+            case "java.lang.String" -> isValueNullFalse.invokeVirtualMethod(getValueAsString, parser);
+            case "char", "java.lang.Character" -> isValueNullFalse.invokeVirtualMethod(
+                    ofMethod(String.class, "charAt", char.class, int.class),
+                    isValueNullFalse.invokeVirtualMethod(getValueAsString, parser), isValueNullFalse.load(0));
+            case "short", "java.lang.Short" -> isValueNullFalse
+                    .convertPrimitive(isValueNullFalse.invokeVirtualMethod(getValueAsInt, parser), short.class);
+            case "int" -> isValueNullFalse.invokeVirtualMethod(getValueAsInt, parser);
+            case "java.lang.Integer" -> isValueNullFalse.invokeStaticMethod(
+                    ofMethod(Integer.class, "valueOf", Integer.class, int.class),
+                    isValueNullFalse.invokeVirtualMethod(getValueAsInt, parser));
+            case "long", "java.lang.Long" -> isValueNullFalse.invokeVirtualMethod(getValueAsLong, parser);
+            case "float", "java.lang.Float" -> isValueNullFalse
+                    .convertPrimitive(isValueNullFalse.invokeVirtualMethod(getValueAsDouble, parser), float.class);
+            case "double", "java.lang.Double" -> isValueNullFalse.invokeVirtualMethod(getValueAsDouble, parser);
+            case "boolean", "java.lang.Boolean" -> isValueNullFalse.invokeVirtualMethod(getValueAsBoolean, parser);
+            default -> throw new IllegalStateException("Type " + fieldType + " should be handled by the switch");
+        };
+        isValueNullFalse.assign(result, convertedValue);
+        // a scalar field receiving an object or array: consume it so the field loop stays aligned
+        isValueNullFalse.invokeVirtualMethod(ofMethod(JsonParser.class, "skipChildren", JsonParser.class), parser);
+
+        return result;
     }
 
     /**
@@ -1103,6 +1384,6 @@ public class JacksonDeserializerFactory extends JacksonCodeGenerator {
             MethodCreator methodCreator,
             ResultHandle jsonNode, Map<String, Integer> typeParametersIndex, Set<String> constructorFields,
             PropertyNamingStrategy namingStrategy, ResultHandle strategyHandle, ResultHandle reverseIndexHandle,
-            ResultHandle activeViewHandle) {
+            ResultHandle activeViewHandle, boolean streaming, Map<String, FieldDescriptor> nestedDeserializers) {
     }
 }

@@ -2,7 +2,9 @@ package io.quarkus.resteasy.reactive.jackson.runtime.serialisers;
 
 import java.lang.reflect.InvocationTargetException;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 import jakarta.inject.Singleton;
 
@@ -21,34 +23,51 @@ import io.quarkus.jackson.ObjectMapperCustomizer;
 @Singleton
 public class GeneratedSerializersRegister implements ObjectMapperCustomizer {
 
-    private static final SimpleModule mappingModule = new SimpleModule();
-    private static final ExactSerializers serializers = new ExactSerializers();
-
-    static {
-        // Use a custom SimpleSerializers to use a json serializer only if it has been generated for that
-        // exact class and not one of its sublclasses. This is already the default behaviour for deserializers.
-        mappingModule.setSerializers(serializers);
-    }
+    private static final List<Class<? extends StdSerializer>> serializerClasses = new CopyOnWriteArrayList<>();
+    private static final List<Class<? extends StdDeserializer>> deserializerClasses = new CopyOnWriteArrayList<>();
+    private static final List<Class<? extends GeneratedPropertyAccessor>> accessorClasses = new CopyOnWriteArrayList<>();
 
     @Override
     public void customize(ObjectMapper objectMapper) {
+        // Every ObjectMapper gets its own instances: the generated (de)serializers resolve the codecs of their nested
+        // types once per mapper (ResolvableSerializer / ResolvableDeserializer), so instances cannot be shared.
+        SimpleModule mappingModule = new SimpleModule();
+        ExactSerializers serializers = new ExactSerializers();
+        for (Class<? extends StdSerializer> serClass : serializerClasses) {
+            StdSerializer serializer = newInstance(serClass);
+            serializers.addExactSerializer(serializer.handledType(), serializer);
+        }
+        mappingModule.setSerializers(serializers);
+        for (Class<? extends StdDeserializer> deserClass : deserializerClasses) {
+            StdDeserializer deserializer = newInstance(deserClass);
+            mappingModule.addDeserializer(deserializer.handledType(), deserializer);
+        }
+        if (!accessorClasses.isEmpty()) {
+            Map<Class<?>, GeneratedPropertyAccessor> accessors = new HashMap<>();
+            for (Class<? extends GeneratedPropertyAccessor> accessorClass : accessorClasses) {
+                GeneratedPropertyAccessor accessor = newInstance(accessorClass);
+                accessors.put(accessor.beanClass(), accessor);
+            }
+            mappingModule.setSerializerModifier(new GeneratedPropertyWriterModifier(accessors));
+        }
         objectMapper.registerModule(mappingModule);
     }
 
+    public static void addPropertyAccessor(Class<? extends GeneratedPropertyAccessor> accessorClass) {
+        accessorClasses.add(accessorClass);
+    }
+
     public static void addSerializer(Class<? extends StdSerializer> serClass) {
-        try {
-            StdSerializer serializer = serClass.getConstructor().newInstance();
-            serializers.addExactSerializer(serializer.handledType(), serializer);
-        } catch (InstantiationException | IllegalAccessException | InvocationTargetException
-                | NoSuchMethodException e) {
-            throw new RuntimeException(e);
-        }
+        serializerClasses.add(serClass);
     }
 
     public static void addDeserializer(Class<? extends StdDeserializer> deserClass) {
+        deserializerClasses.add(deserClass);
+    }
+
+    private static <T> T newInstance(Class<T> clazz) {
         try {
-            StdDeserializer deserializer = deserClass.getConstructor().newInstance();
-            mappingModule.addDeserializer(deserializer.handledType(), deserializer);
+            return clazz.getConstructor().newInstance();
         } catch (InstantiationException | IllegalAccessException | InvocationTargetException
                 | NoSuchMethodException e) {
             throw new RuntimeException(e);
