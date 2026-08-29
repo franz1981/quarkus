@@ -1,7 +1,9 @@
 package io.quarkus.resteasy.reactive.jackson.runtime;
 
 import java.lang.reflect.Type;
+import java.util.ArrayList;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.BiConsumer;
@@ -10,7 +12,8 @@ import java.util.function.Supplier;
 
 import io.quarkus.arc.Arc;
 import io.quarkus.resteasy.reactive.jackson.runtime.security.RolesAllowedConfigExpStorage;
-import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.GeneratedSerializersRegister;
+import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.GeneratedPropertyAccessor;
+import io.quarkus.resteasy.reactive.jackson.runtime.serialisers.GeneratedPropertyAccessorRegister;
 import io.quarkus.runtime.RuntimeValue;
 import io.quarkus.runtime.ShutdownContext;
 import io.quarkus.runtime.annotations.Recorder;
@@ -19,8 +22,6 @@ import io.quarkus.runtime.annotations.StaticInit;
 import tools.jackson.databind.ObjectMapper;
 import tools.jackson.databind.ObjectReader;
 import tools.jackson.databind.ObjectWriter;
-import tools.jackson.databind.deser.std.StdDeserializer;
-import tools.jackson.databind.ser.std.StdSerializer;
 
 @Recorder
 public class ResteasyReactiveServerJacksonRecorder {
@@ -80,12 +81,16 @@ public class ResteasyReactiveServerJacksonRecorder {
         customDeserializationMap.put(target, loadClass(className));
     }
 
-    public void recordGeneratedSerializer(String className) {
-        GeneratedSerializersRegister.addSerializer((Class<? extends StdSerializer>) loadClass(className));
-    }
-
-    public void recordGeneratedDeserializer(String className) {
-        GeneratedSerializersRegister.addDeserializer((Class<? extends StdDeserializer>) loadClass(className));
+    public void recordGeneratedPropertyAccessors(List<String> accessorClassNames, List<String> beanClassNames) {
+        List<Class<?>> beanClasses = new ArrayList<>(beanClassNames.size());
+        for (String beanClassName : beanClassNames) {
+            beanClasses.add(loadClass(beanClassName));
+        }
+        List<Class<? extends GeneratedPropertyAccessor>> accessorClasses = new ArrayList<>(accessorClassNames.size());
+        for (String accessorClassName : accessorClassNames) {
+            accessorClasses.add(loadClass(accessorClassName).asSubclass(GeneratedPropertyAccessor.class));
+        }
+        GeneratedPropertyAccessorRegister.setPropertyAccessors(accessorClasses, beanClasses);
     }
 
     public void configureShutdown(ShutdownContext shutdownContext) {
@@ -95,6 +100,7 @@ public class ResteasyReactiveServerJacksonRecorder {
                 jsonViewMap.clear();
                 customSerializationMap.clear();
                 customDeserializationMap.clear();
+                GeneratedPropertyAccessorRegister.clear();
             }
         });
     }

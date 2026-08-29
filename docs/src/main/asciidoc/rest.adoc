@@ -1741,18 +1741,18 @@ By default, Jackson uses reflection to convert objects to and from JSON.
 However, {project-name} follows a build-time optimization philosophy.
 To align with this approach, configure your application to minimize reflection by using the link:https://quarkus.io/extensions/io.quarkus/quarkus-rest-jackson[`quarkus-rest-jackson`] extension.
 
-This feature is introduced as a Technology Preview and is disabled by default.
+This feature is introduced as a Technology Preview and is enabled by default.
 
 By eliminating reliance on reflection during deserialization, applications can achieve better performance and reduced memory consumption, particularly for native applications where reflection can introduce overhead.
 If you implement this feature, run tests to assess its effect on your applications.
 
-To enable this feature, set the <<quarkus-rest-jackson_quarkus-rest-jackson-optimization-enable-reflection-free-serializers,`quarkus.rest.jackson.optimization.enable-reflection-free-serializers`>> configuration property to `true`:
+To turn this feature off, set the <<quarkus-rest-jackson_quarkus-rest-jackson-optimization-enable-reflection-free-serializers,`quarkus.rest.jackson.optimization.enable-reflection-free-serializers`>> configuration property to `false`:
 
-`quarkus.rest.jackson.optimization.enable-reflection-free-serializers=true`.
+`quarkus.rest.jackson.optimization.enable-reflection-free-serializers=false`.
 
 Setting this property applies reflection-free optimization to deserialization and serialization.
 
-When enabled, {project-name} generates `StdSerializer` and `StdDeserializer` implementations at build time for each class requiring JSON conversion. The application then processes objects returned by REST endpoints using these generated serializers and deserializers, eliminating reliance on reflection and improving performance.
+When enabled, {project-name} generates, at build time, a property accessor that reads and writes the properties of the classes requiring JSON conversion through direct calls instead of reflection. Jackson keeps building and driving its own serializers and deserializers, and only their reflective property access is replaced, so every Jackson feature keeps working; a property the accessor does not cover simply falls back to reflection.
 
 Developers can further customize JSON processing by implementing the `ObjectMapperCustomizer` interface. This interface allows fine-grained control over the `ObjectMapper`, enabling the registration of custom serializers and deserializers while ensuring compatibility with the reflection-free optimization. If additional configuration is needed, implement an `ObjectMapperCustomizer` bean and register any necessary modules or settings.
 
