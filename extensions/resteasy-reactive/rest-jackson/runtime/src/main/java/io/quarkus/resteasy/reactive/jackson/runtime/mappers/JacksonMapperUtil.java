@@ -288,6 +288,15 @@ public class JacksonMapperUtil {
         return valueTypes;
     }
 
+    /**
+     * Whether {@code value} can be written with the serializer that the generated serializer resolved once for the
+     * declared type of the property: only for non-null values of exactly that type, and never for self-references
+     * (those go through {@link #serializePojo} which applies {@code SerializationFeature.FAIL_ON_SELF_REFERENCES}).
+     */
+    public static boolean useResolvedSerializer(Object value, Object bean, Class<?> declaredType) {
+        return value != null && value != bean && value.getClass() == declaredType;
+    }
+
     public static void serializePojo(Object value, JsonGenerator generator, SerializationContext serializationContext) {
         serializePojo(value, null, generator, serializationContext);
     }
