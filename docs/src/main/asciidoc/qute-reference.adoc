@@ -2810,6 +2810,8 @@ Both of these extensions register a special response filter which enables resour
 
 NOTE: If using Quarkus REST, a resource method that returns `TemplateInstance` is considered non-blocking. You need to annotate the method with `io.smallrye.common.annotation.Blocking` in order to mark the method as blocking. For example if it's also annotated with `@RunOnVirtualThread`.
 
+NOTE: If using Quarkus REST, a returned `TemplateInstance` is usually rendered as UTF-8 bytes: a response filter that reads the entity may get a `CharSequence` that is not a `String`. Use `toString()` to get the rendered text.
+
 The end result is that a using Qute within a Jakarta REST resource may look as simple as:
 
 .HelloResource.java

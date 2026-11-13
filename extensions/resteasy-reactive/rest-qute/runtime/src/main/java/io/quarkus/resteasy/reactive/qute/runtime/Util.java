@@ -21,7 +21,14 @@ final class Util {
     }
 
     static Uni<String> toUni(TemplateInstance instance, Engine engine) {
-        Uni<String> uni = instance.createUni();
+        return withTimeout(instance.createUni(), instance, engine);
+    }
+
+    static Uni<Utf8Output> toUtf8Uni(TemplateInstance instance, Engine engine) {
+        return withTimeout(Uni.createFrom().completionStage(() -> Utf8Output.render(instance)), instance, engine);
+    }
+
+    private static <T> Uni<T> withTimeout(Uni<T> uni, TemplateInstance instance, Engine engine) {
         if (!engine.useAsyncTimeout()) {
             // Make sure the timeout is always used
             long timeout = instance.getTimeout();
@@ -29,6 +36,14 @@ final class Util {
                     .failWith(() -> new TemplateException(instance + " rendering timeout [" + timeout + "ms] occurred"));
         }
         return uni;
+    }
+
+    /**
+     * Writer interceptors keep getting a String. Without a selected media type, the String keeps the default
+     * {@code text/plain} of RESTEasy Reactive.
+     */
+    static boolean useUtf8Output(MediaType mediaType, boolean hasWriterInterceptors) {
+        return mediaType != null && !hasWriterInterceptors;
     }
 
     @SuppressWarnings("unchecked")
