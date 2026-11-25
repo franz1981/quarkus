@@ -1760,6 +1760,8 @@ Setting this property applies reflection-free optimization to deserialization an
 
 When enabled, {project-name} generates `StdSerializer` and `StdDeserializer` implementations at build time for each class requiring JSON conversion. The application then processes objects returned by REST endpoints using these generated serializers and deserializers, eliminating reliance on reflection and improving performance.
 
+If the application also uses the link:https://quarkus.io/extensions/io.quarkus/quarkus-rest-client-jackson[`quarkus-rest-client-jackson`] extension, deserializers are also generated for the types returned by the methods of the REST Client interfaces, and serializers for the bodies they send, since the REST Client reads and writes them through the same `ObjectMapper`.
+
 Developers can further customize JSON processing by implementing the `JsonMapperBuilderCustomizer` interface. This interface allows fine-grained control over the `JsonMapper.Builder`, enabling the registration of custom serializers and deserializers while ensuring compatibility with the reflection-free optimization. If additional configuration is needed, implement a `JsonMapperBuilderCustomizer` bean and register any necessary modules or settings.
 
 [NOTE]

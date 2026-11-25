@@ -5,8 +5,10 @@ import static io.quarkus.security.spi.RolesAllowedConfigExpResolverBuildItem.isS
 import static org.jboss.resteasy.reactive.common.util.RestMediaType.APPLICATION_NDJSON;
 import static org.jboss.resteasy.reactive.common.util.RestMediaType.APPLICATION_STREAM_JSON;
 
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
@@ -18,6 +20,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Predicate;
 
 import jakarta.inject.Singleton;
+import jakarta.ws.rs.HttpMethod;
 import jakarta.ws.rs.PATCH;
 import jakarta.ws.rs.POST;
 import jakarta.ws.rs.PUT;
@@ -38,6 +41,7 @@ import org.jboss.jandex.Type;
 import org.jboss.logging.Logger;
 import org.jboss.resteasy.reactive.common.model.ResourceMethod;
 import org.jboss.resteasy.reactive.common.processor.ResteasyReactiveDotNames;
+import org.jboss.resteasy.reactive.common.processor.scanning.ResourceScanningResult;
 import org.jboss.resteasy.reactive.server.util.MethodId;
 
 import com.fasterxml.jackson.annotation.JsonView;
@@ -386,6 +390,7 @@ public class ResteasyReactiveJacksonProcessor {
     public void handleEndpointParams(ResteasyReactiveResourceMethodEntriesBuildItem resourceMethodEntries,
             JaxRsResourceIndexBuildItem jaxRsIndex, CombinedIndexBuildItem index,
             List<ResponseTypeUnwrapperBuildItem> responseTypeUnwrappers,
+            Capabilities capabilities, Optional<ResourceScanningResultBuildItem> resourceScanningResult,
             ServiceRegistrar serviceRegistrar,
             BuildProducer<GeneratedClassBuildItem> generatedClassBuildItemBuildProducer) {
 
@@ -422,6 +427,14 @@ public class ResteasyReactiveJacksonProcessor {
             }
         }
 
+        if (capabilities.isPresent(Capability.REST_CLIENT_REACTIVE_JACKSON) && resourceScanningResult.isPresent()) {
+            // the REST Client Jackson reader and writer use the same ObjectMapper customized by GeneratedSerializersRegister,
+            // so the (de)serializers are also generated for the entities of the REST Client interfaces: like for the
+            // server endpoints, but the other way around, the client deserializes the responses and serializes the requests
+            collectRestClientTypes(resourceScanningResult.get().getResult(), indexView, additionalUnwrapTypes,
+                    serializedTypes, deserializedTypes);
+        }
+
         List<String> generatedSerializers = serializedTypes.isEmpty() ? List.of()
                 : List.copyOf(new JacksonSerializerFactory(generatedClassBuildItemBuildProducer, index.getComputingIndex())
                         .createFromTypes(serializedTypes.values()));
@@ -434,6 +447,51 @@ public class ResteasyReactiveJacksonProcessor {
                     .atPhase(Phase.STATIC_INIT)
                     .onStart(ctx -> ResteasyReactiveServerJacksonRecorder.registerGeneratedSerializers(generatedSerializers,
                             generatedDeserializers));
+        }
+    }
+
+    private static void collectRestClientTypes(ResourceScanningResult result, IndexView indexView,
+            Set<DotName> additionalUnwrapTypes, Map<String, Type> serializedTypes, Map<String, Type> deserializedTypes) {
+        Map<DotName, String> httpAnnotationToMethod = result.getHttpAnnotationToMethod();
+        Set<DotName> visited = new HashSet<>();
+        Deque<DotName> interfaces = new ArrayDeque<>(result.getClientInterfaces().keySet());
+        while (!interfaces.isEmpty()) {
+            ClassInfo clientInterface = indexView.getClassByName(interfaces.removeFirst());
+            if (clientInterface == null || !visited.add(clientInterface.name())) {
+                continue;
+            }
+            interfaces.addAll(clientInterface.interfaceNames());
+            for (MethodInfo methodInfo : clientInterface.methods()) {
+                String httpMethod = null;
+                for (Map.Entry<DotName, String> entry : httpAnnotationToMethod.entrySet()) {
+                    if (methodInfo.hasDeclaredAnnotation(entry.getKey())) {
+                        httpMethod = entry.getValue();
+                        break;
+                    }
+                }
+                if (httpMethod == null) {
+                    continue;
+                }
+                Type effectiveReturnType = getEffectiveType(methodInfo.returnType(), additionalUnwrapTypes);
+                if (effectiveReturnType != null) {
+                    ClassInfo classInfo = indexView.getClassByName(effectiveReturnType.name());
+                    if (classInfo != null) {
+                        deserializedTypes.put(classInfo.name().toString(), effectiveReturnType);
+                    }
+                }
+                if (httpMethod.equals(HttpMethod.POST) || httpMethod.equals(HttpMethod.PUT)
+                        || httpMethod.equals(HttpMethod.PATCH)) {
+                    for (Type paramType : methodInfo.parameterTypes()) {
+                        Type effectiveParamType = getEffectiveType(paramType, additionalUnwrapTypes);
+                        if (effectiveParamType != null) {
+                            ClassInfo classInfo = indexView.getClassByName(effectiveParamType.name());
+                            if (classInfo != null && !classInfo.isEnum()) {
+                                serializedTypes.put(classInfo.name().toString(), effectiveParamType);
+                            }
+                        }
+                    }
+                }
+            }
         }
     }
 
