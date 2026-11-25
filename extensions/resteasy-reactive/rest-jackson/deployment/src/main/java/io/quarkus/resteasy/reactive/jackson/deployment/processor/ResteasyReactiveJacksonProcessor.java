@@ -387,7 +387,8 @@ public class ResteasyReactiveJacksonProcessor {
             JaxRsResourceIndexBuildItem jaxRsIndex, CombinedIndexBuildItem index,
             List<ResponseTypeUnwrapperBuildItem> responseTypeUnwrappers,
             ServiceRegistrar serviceRegistrar,
-            BuildProducer<GeneratedClassBuildItem> generatedClassBuildItemBuildProducer) {
+            BuildProducer<GeneratedClassBuildItem> generatedClassBuildItemBuildProducer,
+            BuildProducer<ReflectiveClassBuildItem> reflectiveClassProducer) {
 
         IndexView indexView = jaxRsIndex.getIndexView();
         Set<DotName> additionalUnwrapTypes = new HashSet<>();
@@ -428,6 +429,12 @@ public class ResteasyReactiveJacksonProcessor {
         List<String> generatedDeserializers = deserializedTypes.isEmpty() ? List.of()
                 : List.copyOf(new JacksonDeserializerFactory(generatedClassBuildItemBuildProducer, index.getComputingIndex())
                         .createFromTypes(deserializedTypes.values()));
+
+        if (!generatedDeserializers.isEmpty()) {
+            // GeneratedSerializersRegister creates a new instance of a generated deserializer for each ObjectMapper
+            reflectiveClassProducer.produce(ReflectiveClassBuildItem.builder(generatedDeserializers)
+                    .reason(getClass().getName()).constructors().build());
+        }
 
         if (!generatedSerializers.isEmpty() || !generatedDeserializers.isEmpty()) {
             serviceRegistrar.forService("io.quarkus.resteasy.reactive.jackson.generated-serializers")

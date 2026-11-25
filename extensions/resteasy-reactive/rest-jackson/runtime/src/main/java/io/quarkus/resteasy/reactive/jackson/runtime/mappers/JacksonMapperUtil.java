@@ -30,7 +30,10 @@ import io.quarkus.arc.ArcContainer;
 import io.quarkus.arc.InstanceHandle;
 import io.quarkus.resteasy.reactive.jackson.runtime.security.RolesAllowedConfigExpStorage;
 import io.quarkus.security.identity.SecurityIdentity;
+import tools.jackson.core.JacksonException;
 import tools.jackson.core.JsonGenerator;
+import tools.jackson.core.JsonParser;
+import tools.jackson.core.JsonToken;
 import tools.jackson.core.SerializableString;
 import tools.jackson.core.filter.FilteringGeneratorDelegate;
 import tools.jackson.core.filter.TokenFilter;
@@ -45,6 +48,7 @@ import tools.jackson.databind.ObjectWriter;
 import tools.jackson.databind.PropertyNamingStrategy;
 import tools.jackson.databind.SerializationContext;
 import tools.jackson.databind.SerializationFeature;
+import tools.jackson.databind.ValueDeserializer;
 import tools.jackson.databind.ValueSerializer;
 import tools.jackson.databind.exc.MismatchedInputException;
 import tools.jackson.databind.introspect.AnnotatedMethod;
@@ -323,6 +327,41 @@ public class JacksonMapperUtil {
                             + "` (set `DeserializationFeature.FAIL_ON_NULL_FOR_PRIMITIVES` to 'false' to allow)")
                     .prependPath(referrer, propertyName);
         }
+    }
+
+    /**
+     * Called by the generated deserializers from {@code ValueDeserializer#resolve} to look up, once per
+     * {@code DeserializerCache}, the deserializer of a type they read through {@link #readValue}. It returns the same
+     * deserializer that {@link DeserializationContext#readValue(JsonParser, Class)} would look up for that type, or
+     * {@code null} if the lookup fails: in that case the type is looked up again when a value of it is read, so that
+     * the failure is reported only if the JSON actually contains such a value, as without this lookup.
+     */
+    public static ValueDeserializer<Object> findValueDeserializer(DeserializationContext context, Class<?> type) {
+        try {
+            return context.findRootValueDeserializer(context.constructType(type));
+        } catch (JacksonException e) {
+            return null;
+        }
+    }
+
+    /**
+     * Called by the generated deserializers to read a value with the deserializer previously returned by
+     * {@link #findValueDeserializer}. It does the same as {@link DeserializationContext#readValue(JsonParser, Class)}
+     * without looking up and contextualizing the deserializer for every value, which Jackson does on each call of that
+     * method (and which, for a bean, builds a new property name matcher every time).
+     */
+    public static Object readValue(JsonParser parser, DeserializationContext context, ValueDeserializer<Object> deserializer,
+            Class<?> type) {
+        if (deserializer == null) {
+            return context.readValue(parser, type);
+        }
+        if (!parser.hasCurrentToken()) {
+            parser.nextToken();
+        }
+        if (parser.hasToken(JsonToken.VALUE_NULL)) {
+            return deserializer.getNullValue(context);
+        }
+        return deserializer.deserialize(parser, context);
     }
 
     public static void serializePojo(Object value, JsonGenerator generator, SerializationContext serializationContext) {
