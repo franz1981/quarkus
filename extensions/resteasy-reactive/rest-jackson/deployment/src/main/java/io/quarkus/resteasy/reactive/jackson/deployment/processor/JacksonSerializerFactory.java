@@ -880,6 +880,11 @@ public class JacksonSerializerFactory extends JacksonCodeGenerator {
 
     private static BytecodeCreator checkInclude(BytecodeCreator bytecode, GenerationSerializationContext ctx, ResultHandle arg,
             FieldSpecs fieldSpecs, String classInclude) {
+        if (fieldSpecs.fieldType.kind() == Type.Kind.PRIMITIVE) {
+            // SerializationInclude#shouldSerialize returns true for any primitive value, whatever the inclusion is:
+            // skip the check, which would require boxing the value
+            return bytecode;
+        }
         MethodDescriptor shouldSerialize = MethodDescriptor.ofMethod(JacksonMapperUtil.SerializationInclude.class,
                 "shouldSerialize",
                 boolean.class, Object.class);
